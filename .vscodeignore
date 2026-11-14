@@ -5,4 +5,3 @@ out/test/**
 tsconfig.json
 node_modules/**
 *.vsix
-releases/
