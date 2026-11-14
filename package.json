@@ -1,36 +1,128 @@
 {
   "name": "nexus",
   "displayName": "Nexus",
-  "description": "IDE-integrated engineering intelligence for understanding unfamiliar codebases.",
-  "version": "0.0.1",
+  "description": "Understand unfamiliar code: plain-English, visual, evidence-backed explanations of whatever you select.",
+  "version": "0.2.0",
   "private": true,
   "engines": {
     "vscode": "^1.113.0"
   },
   "categories": [
+    "Programming Languages",
+    "Education",
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:nexus.exploreCurrentSymbol"
-  ],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
+        "command": "nexus.explain",
+        "title": "Explain This Code",
+        "category": "Nexus",
+        "icon": "$(lightbulb)"
+      },
+      {
         "command": "nexus.exploreCurrentSymbol",
-        "title": "Nexus: Explore Current Symbol",
+        "title": "Explore Current Symbol (same as Explain)",
+        "category": "Nexus"
+      },
+      {
+        "command": "nexus.toggleFollowCursor",
+        "title": "Toggle Follow Cursor",
+        "category": "Nexus"
+      },
+      {
+        "command": "nexus.setGeminiApiKey",
+        "title": "Set Gemini API Key",
         "category": "Nexus"
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "nexus.explain",
+          "group": "navigation@0",
+          "when": "editorTextFocus"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "nexus.explain",
+          "group": "navigation",
+          "when": "editorTextFocus || activeEditor"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "nexus.exploreCurrentSymbol",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "nexus.explain",
+        "key": "ctrl+alt+e",
+        "mac": "cmd+alt+e",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Nexus",
+      "properties": {
+        "nexus.followCursor": {
+          "type": "boolean",
+          "default": false,
+          "description": "Update the Nexus panel automatically as you move the cursor (while the panel is open)."
+        },
+        "nexus.ai.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show an AI summary of what the selected code does in this project. The AI only receives files from this workspace (no web access). Nexus asks before sending anything the first time."
+        },
+        "nexus.ai.provider": {
+          "type": "string",
+          "enum": [
+            "vscode",
+            "gemini"
+          ],
+          "default": "vscode",
+          "enumDescriptions": [
+            "Use a model available in VS Code (for example GitHub Copilot). No key needed.",
+            "Use Google Gemini with your own key (run “Nexus: Set Gemini API Key”)."
+          ],
+          "description": "Which AI model provider to use for summaries."
+        },
+        "nexus.ai.modelFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: preferred VS Code model family, e.g. gpt-4o or claude-sonnet. Empty uses the first available model."
+        },
+        "nexus.ai.geminiModel": {
+          "type": "string",
+          "default": "gemini-2.5-flash",
+          "description": "Gemini model name, when the provider is gemini."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
+    "package": "npx --yes @vscode/vsce package --allow-missing-repository --skip-license"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.113.0",
     "typescript": "^5.9.3"
-  }
+  },
+  "publisher": "nexus-dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Saai676/Nexus-Visual-Studio-Code-Extension"
+  },
+  "license": "UNLICENSED"
 }
