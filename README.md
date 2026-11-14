@@ -17,6 +17,7 @@ Visual first, words second:
 | Section | What it is |
 |---|---|
 | **Headline** | One big line: `st` = short name for `streamlit` |
+| Ask about this *(AI, optional)* | A chat box: ask anything about the selection or the project. It starts with what Nexus already knows, can open other project files or search the project, remembers the conversation, and answers with clickable `file:line` citations. Workspace files only |
 | Read it left to right | The expression as numbered boxes with arrows: `st` → look inside for `title` → run it with `"…"` |
 | The pieces | Each part of the code as a coloured, labelled chip (click a chip for its meaning) |
 | How it connects | Concept map: where it comes from → what you selected → what it's used for |

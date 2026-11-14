@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { AiSummarizer, type AiContextFile, type AiRequest } from "./aiSummary";
+import { AiSummarizer, UnavailableError, type AiContextFile, type AiRequest } from "./aiSummary";
+import { buildChatPrompt, CHAT_SYSTEM_PROMPT, parseChatReply, searchLines, type ChatTurn, type SearchHit } from "./chatPrompt";
 import { summarizeDeclarationAt } from "./analysis/crossFile";
 import { buildMapView, buildProjectGraph, describeMapForAi, type ProjectFile, type ProjectGraph, type ProjectMapView } from "./analysis/projectMap";
 import {
@@ -45,6 +46,20 @@ export function activate(context: vscode.ExtensionContext): void {
   let followTimer: NodeJS.Timeout | undefined;
   let running = 0;
 
+  /** What the current panel is about, so "Ask about this" can use the same context. */
+  interface ChatContext {
+    readonly version: number;
+    readonly document: vscode.TextDocument;
+    readonly analysis: SelectionAnalysis;
+    readonly explanation: Explanation;
+    readonly provider: ProviderEvidence;
+    base?: AiRequest;
+    readonly history: ChatTurn[];
+    busy: boolean;
+  }
+  let chat: ChatContext | undefined;
+  let chatCancellation: vscode.CancellationTokenSource | undefined;
+
   const config = (): vscode.WorkspaceConfiguration => vscode.workspace.getConfiguration("nexus");
 
   const panel = new InvestigationPanel({
@@ -55,6 +70,14 @@ export function activate(context: vscode.ExtensionContext): void {
             void vscode.commands.executeCommand("nexus.explain");
           }
         });
+      });
+    },
+    onAsk: (question, version) => {
+      void answerQuestion(question, version).catch((error: unknown) => {
+        panel.showChatAnswer(version, { error: `Something went wrong: ${error instanceof Error ? error.message : String(error)}` });
+        if (chat) {
+          chat.busy = false;
+        }
       });
     },
     onToggleFollow: () => {
@@ -83,6 +106,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const aiEnabled = ai.isEnabled();
     const version = panel.show(explanation, displayPath(document.uri), aiEnabled, config().get<boolean>("followCursor", false), mode === "follow");
     writeOutput(output, explanation, document.uri);
+    chatCancellation?.cancel();
+    chat = { version, document, analysis, explanation, provider, history: [], busy: false };
 
     aiCancellation?.cancel();
     aiCancellation?.dispose();
@@ -208,6 +233,119 @@ export function activate(context: vscode.ExtensionContext): void {
     });
   }
 
+  async function answerQuestion(question: string, version: number): Promise<void> {
+    const current = chat;
+    if (!current || current.version !== version || current.busy) {
+      return;
+    }
+    const blocked = await ai.gate();
+    if (blocked) {
+      panel.showChatAnswer(version, { error: blocked });
+      return;
+    }
+    current.busy = true;
+    chatCancellation?.dispose();
+    const source = new vscode.CancellationTokenSource();
+    chatCancellation = source;
+
+    current.base ??= await buildAiRequest(current.document, current.analysis, current.explanation, current.provider);
+    const extraFiles: AiContextFile[] = [];
+    const hits: SearchHit[] = [];
+    const lookedUp: string[] = [];
+    const maxLookups = 2;
+
+    try {
+      for (let round = 0; round <= maxLookups; round += 1) {
+        const lookupsLeft = maxLookups - round;
+        const { prompt, sentLines } = buildChatPrompt(current.base, extraFiles, hits, current.history, question, lookupsLeft);
+        const { text, model } = await ai.complete(CHAT_SYSTEM_PROMPT, prompt, source.token);
+        if (source.token.isCancellationRequested) {
+          return;
+        }
+        const reply = parseChatReply(text, sentLines, lookupsLeft > 0);
+
+        if (reply.kind === "lookup") {
+          panel.showChatStatus(version, `Looking at ${[...reply.request.open, ...reply.request.search.map((word) => `“${word}”`)].join(", ")}…`);
+          await runLookups(current, reply.request.open, reply.request.search, extraFiles, hits, lookedUp);
+          continue;
+        }
+        if (reply.kind === "failed") {
+          panel.showChatAnswer(version, { error: reply.message });
+          return;
+        }
+
+        current.history.push({ role: "user", text: question }, { role: "assistant", text: reply.text });
+        panel.showChatAnswer(version, {
+          text: reply.text,
+          citations: reply.citations,
+          followUps: reply.followUps,
+          droppedCitations: reply.droppedCitations,
+          lookedUp,
+          model,
+        });
+        return;
+      }
+    } catch (error) {
+      panel.showChatAnswer(version, {
+        error: error instanceof UnavailableError ? error.message : `The AI request failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    } finally {
+      current.busy = false;
+    }
+  }
+
+  /** Opens project files and searches the project, for the chat. Only files in the project map are reachable. */
+  async function runLookups(
+    current: ChatContext,
+    openPaths: readonly string[],
+    searches: readonly string[],
+    extraFiles: AiContextFile[],
+    hits: SearchHit[],
+    lookedUp: string[],
+  ): Promise<void> {
+    const projectFiles = current.provider.projectMap?.files ?? [];
+    const readText = async (uri: string): Promise<string | undefined> => {
+      try {
+        const open = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === uri);
+        if (open) {
+          return open.getText();
+        }
+        const parsed = vscode.Uri.parse(uri);
+        const stat = await vscode.workspace.fs.stat(parsed);
+        return stat.size > MAX_IMPORTER_FILE_BYTES ? undefined : new TextDecoder().decode(await vscode.workspace.fs.readFile(parsed));
+      } catch {
+        return undefined;
+      }
+    };
+
+    for (const wanted of openPaths.slice(0, 3)) {
+      const match = projectFiles.find((file) => file.path === wanted) ?? projectFiles.find((file) => file.path.endsWith(`/${wanted}`) || wanted.endsWith(file.path));
+      if (!match || extraFiles.some((file) => file.uri === match.uri)) {
+        continue;
+      }
+      const text = await readText(match.uri);
+      if (text !== undefined) {
+        extraFiles.push({ label: match.path, uri: match.uri, firstLine: 0, lines: text.split(/\r?\n/).slice(0, 220), role: "opened on request" });
+        lookedUp.push(match.path);
+      }
+    }
+
+    if (searches.length > 0 && projectFiles.length > 0) {
+      const texts: { label: string; uri: string; text: string }[] = [];
+      for (const file of projectFiles.slice(0, 400)) {
+        const text = await readText(file.uri);
+        if (text !== undefined) {
+          texts.push({ label: file.path, uri: file.uri, text });
+        }
+      }
+      for (const word of searches.slice(0, 3)) {
+        const found = searchLines(texts, word, 15);
+        hits.push(...found.filter((hit) => !hits.some((existing) => existing.uri === hit.uri && existing.line === hit.line)));
+        lookedUp.push(`search “${word}” (${found.length} hit${found.length === 1 ? "" : "s"})`);
+      }
+    }
+  }
+
   const explainCommand = async (): Promise<void> => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
@@ -278,6 +416,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidCreateFiles(() => projectCache.clear()),
     vscode.workspace.onDidDeleteFiles(() => projectCache.clear()),
     { dispose: () => clearTimeout(followTimer) },
+    { dispose: () => chatCancellation?.cancel() },
   );
 }
 

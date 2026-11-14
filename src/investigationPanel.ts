@@ -2,11 +2,12 @@ import { randomBytes } from "crypto";
 import * as vscode from "vscode";
 import type { AiResult } from "./aiPrompt";
 import type { Evidence, Explanation } from "./analysis/explanationModel";
-import { renderAiResult, renderPanel } from "./panelHtml";
+import { renderAiResult, renderChatAnswer, renderPanel } from "./panelHtml";
 
 export interface PanelCallbacks {
   readonly onEnableAi: () => void;
   readonly onToggleFollow: () => void;
+  readonly onAsk: (question: string, version: number) => void;
 }
 
 interface PanelMessage {
@@ -14,6 +15,7 @@ interface PanelMessage {
   readonly evidenceId?: string;
   readonly cite?: string;
   readonly uri?: string;
+  readonly text?: string;
 }
 
 /**
@@ -76,6 +78,26 @@ export class InvestigationPanel implements vscode.Disposable {
     void this.panel.webview.postMessage({ command: "aiResult", html: renderAiResult(result, enabled) });
   }
 
+  /** Updates the "thinking" line under the user's question. */
+  showChatStatus(version: number, text: string): void {
+    if (this.panel && version === this.renderVersion) {
+      void this.panel.webview.postMessage({ command: "chatStatus", text });
+    }
+  }
+
+  /** Shows a chat answer and allows its citations to be opened. */
+  showChatAnswer(version: number, answer: Parameters<typeof renderChatAnswer>[0]): void {
+    if (!this.panel || version !== this.renderVersion) {
+      return;
+    }
+    if (!("error" in answer)) {
+      for (const cite of answer.citations) {
+        this.aiCitations.add(`${cite.uri}|${cite.line}`);
+      }
+    }
+    void this.panel.webview.postMessage({ command: "chatAnswer", html: renderChatAnswer(answer) });
+  }
+
   dispose(): void {
     this.panel?.dispose();
     this.panel = undefined;
@@ -132,6 +154,11 @@ export class InvestigationPanel implements vscode.Disposable {
           await openLocation(raw.uri, 0, 0, 0, 0);
         }
         return;
+      case "ask":
+        if (raw.text && raw.text.trim()) {
+          this.callbacks.onAsk(raw.text.trim().slice(0, 2_000), this.renderVersion);
+        }
+        return;
       case "enableAi":
         this.callbacks.onEnableAi();
         return;
@@ -162,13 +189,14 @@ function isPanelMessage(message: unknown): message is PanelMessage {
     return false;
   }
   const candidate = message as Record<string, unknown>;
-  const allowed = ["navigate", "navigateAi", "openFile", "enableAi", "toggleFollow"];
+  const allowed = ["navigate", "navigateAi", "openFile", "ask", "enableAi", "toggleFollow"];
   return (
     typeof candidate.command === "string" &&
     allowed.includes(candidate.command) &&
     (candidate.evidenceId === undefined || (typeof candidate.evidenceId === "string" && candidate.evidenceId.length <= 64)) &&
     (candidate.cite === undefined || (typeof candidate.cite === "string" && candidate.cite.length <= 2048)) &&
-    (candidate.uri === undefined || (typeof candidate.uri === "string" && candidate.uri.length <= 2048))
+    (candidate.uri === undefined || (typeof candidate.uri === "string" && candidate.uri.length <= 2048)) &&
+    (candidate.text === undefined || (typeof candidate.text === "string" && candidate.text.length <= 4000))
   );
 }
 
