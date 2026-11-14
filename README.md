@@ -40,6 +40,15 @@ Evidence tags: **seen in file** (read in source), **language server** (reported 
 
 Settings → `nexus.ai.enabled`. Provider `vscode` uses a model you already have in VS Code (e.g. GitHub Copilot), with no key needed. Provider `gemini` uses your own key (**Nexus: Set Gemini API Key**, stored in VS Code secret storage). The model receives only workspace text and has no web access or tools; citations that don't match lines Nexus actually sent are discarded. Nexus asks once before sending any code.
 
+## Run from source (F5)
+
+1. `git pull`
+2. Open the Nexus folder in VS Code and press **F5** (Run → Start Debugging → "Run Nexus Extension").
+   F5 installs dependencies and compiles automatically, then opens a second window titled **[Extension Development Host]**.
+3. In that new window, open a project (e.g. the Finance repo), click on some code and run **Nexus: Explain This Code**.
+
+If F5 still says *"preLaunchTask … exited with code 127"*, VS Code can't find Node/npm. Quit VS Code, open Terminal, `cd` into the Nexus folder, run `npm install`, then `code .` and press F5 again.
+
 ## Develop
 
 ```bash
