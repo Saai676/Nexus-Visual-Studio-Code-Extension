@@ -7,10 +7,12 @@ import {
   type SourceRange,
   type SymbolInvestigation,
 } from "./investigationModel";
+import { InvestigationPanel } from "./investigationPanel";
 import { investigateSymbol } from "./symbolInvestigator";
 
 export function activate(context: vscode.ExtensionContext): void {
   const outputChannel = vscode.window.createOutputChannel("Nexus");
+  const investigationPanel = new InvestigationPanel();
   const exploreCurrentSymbolCommand = vscode.commands.registerCommand(
     "nexus.exploreCurrentSymbol",
     async () => {
@@ -42,7 +44,7 @@ export function activate(context: vscode.ExtensionContext): void {
         );
 
         writeInvestigationReport(outputChannel, investigation);
-        outputChannel.show(true);
+        investigationPanel.show(investigation);
         showInvestigationSummary(investigation);
       } catch (error) {
         const message = getErrorMessage(error);
@@ -57,7 +59,11 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   );
 
-  context.subscriptions.push(outputChannel, exploreCurrentSymbolCommand);
+  context.subscriptions.push(
+    outputChannel,
+    investigationPanel,
+    exploreCurrentSymbolCommand,
+  );
 }
 
 function getSelectedSymbol(
@@ -78,9 +84,13 @@ function getSelectedSymbol(
     const providerPosition = editor.document.positionAt(
       editor.document.offsetAt(selection.start) + leadingWhitespace,
     );
+    const symbolRange = editor.document.getWordRangeAtPosition(providerPosition);
+    if (!symbolRange) {
+      return undefined;
+    }
 
     return {
-      name: trimmedText,
+      name: editor.document.getText(symbolRange),
       origin: "selection",
       sourceUri,
       range: toSourceRange(selection),
