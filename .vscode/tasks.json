@@ -1,0 +1,24 @@
+{
+  // Builds Nexus before F5 launches the Extension Development Host.
+  // On macOS/Linux the build runs in a login + interactive shell so that
+  // Node installed with nvm, Homebrew or Volta is found (otherwise the
+  // task fails with exit code 127, "npm: command not found").
+  // `npm install` makes sure dependencies are present after a `git pull`.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "nexus: build",
+      "type": "shell",
+      "command": "npm install --no-audit --no-fund --prefer-offline && npm run compile",
+      "osx": {
+        "options": { "shell": { "executable": "${env:SHELL}", "args": ["-l", "-i", "-c"] } }
+      },
+      "linux": {
+        "options": { "shell": { "executable": "${env:SHELL}", "args": ["-l", "-i", "-c"] } }
+      },
+      "problemMatcher": "$tsc",
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "silent", "panel": "shared", "clear": true }
+    }
+  ]
+}
