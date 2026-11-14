@@ -271,3 +271,43 @@ test("AI answers: thorough fields (flow steps, inputs, outputs, dependents) are 
     assert.equal(result.outputs, "The page the user sees");
   }
 });
+
+test("chat: answers keep only citations to lines the AI was shown, and lookups are parsed", async () => {
+  const { buildChatPrompt, parseChatReply, searchLines } = await import("../chatPrompt");
+  const base = {
+    languageLabel: "Python",
+    selectedCode: "st",
+    selectionLabel: "main.py",
+    selectionLine: 0,
+    files: [{ label: "main.py", uri: "file:///main.py", firstLine: 0, lines: FINANCE.split("\n"), role: "the open file" }],
+    verifiedFacts: [],
+    projectFiles: ["main.py", "app/utils.py"],
+  };
+  const hits = searchLines([{ label: "app/utils.py", uri: "file:///app/utils.py", text: "import os\n\ndef parse(x):\n    return x\n" }], "parse");
+  assert.deepEqual(hits.map((hit) => hit.line), [2]);
+
+  const { prompt, sentLines } = buildChatPrompt(base, [], hits, [{ role: "user", text: "hi" }, { role: "assistant", text: "hello" }], "Where is parse defined?", 1);
+  assert.match(prompt, /The user now asks: Where is parse defined\?/);
+  assert.match(prompt, /USER: hi/);
+
+  const answer = parseChatReply(JSON.stringify({ answer: "It is defined in app/utils.py.", cite: [{ file: "app/utils.py", line: 3 }, { file: "app/utils.py", line: 40 }], followUps: ["What calls it?"] }), sentLines, true);
+  assert.equal(answer.kind, "answer");
+  if (answer.kind === "answer") {
+    assert.equal(answer.citations.length, 1);
+    assert.equal(answer.citations[0].line, 2);
+    assert.equal(answer.droppedCitations, 1);
+    assert.deepEqual(answer.followUps, ["What calls it?"]);
+  }
+
+  const lookup = parseChatReply(JSON.stringify({ lookup: [{ open: "./app/utils.py" }, { search: "parse" }] }), sentLines, true);
+  assert.deepEqual(lookup.kind === "lookup" ? lookup.request : undefined, { open: ["app/utils.py"], search: ["parse"] });
+  assert.equal(parseChatReply(JSON.stringify({ lookup: [{ open: "x.py" }], answer: "fallback" }), sentLines, false).kind, "answer");
+});
+
+test("chat: the panel shows an Ask box when AI is on and an enable link when off", () => {
+  const result = explain(FINANCE, "python", "st.title");
+  const on = renderPanel(result, { nonce: "n", cspSource: "x", displayPath: "main.py", aiEnabled: true, followCursor: false });
+  assert.ok(on.includes('id="chat-form"') && on.includes("data-ask="));
+  const off = renderPanel(result, { nonce: "n", cspSource: "x", displayPath: "main.py", aiEnabled: false, followCursor: false });
+  assert.ok(!off.includes('id="chat-form"') && off.includes('data-command="enableAi"'));
+});
