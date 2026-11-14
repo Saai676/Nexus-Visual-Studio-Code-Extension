@@ -189,7 +189,37 @@ test("panel HTML escapes source text and renders every section", () => {
   const result = explain(source, "python", "markdown");
   const html = renderPanel(result, { nonce: "abc", cspSource: "x", displayPath: "main.py", aiEnabled: false, followCursor: false });
   assert.ok(!html.includes("<script>alert(1)</script>"));
-  for (const heading of ["What this means", "Read it piece by piece", "How it connects", "What Nexus can&#39;t tell you"]) {
+  for (const heading of ["The pieces", "How it connects", "Explain in words", "What Nexus can't tell you"]) {
     assert.ok(html.includes(heading), heading);
   }
+});
+
+test("every explanation has a short one-line headline", () => {
+  const cases: [string, string, number, RegExp][] = [
+    ["st.title", "python", 0, /^st = short name for streamlit$/],
+    ["columns", "python", 0, /^columns = something inside streamlit$/],
+    ["left", "python", 1, /^left = the first piece of st\.columns\(2\)$/],
+  ];
+  for (const [needle, languageId, nth, expected] of cases) {
+    assert.match(richToPlain(explain(FINANCE, languageId, needle, 0, nth).headline), expected);
+  }
+});
+
+test("expressions get a left-to-right step strip", () => {
+  const result = explain(FINANCE, "python", "st.title");
+  assert.deepEqual(
+    result.steps.map((step) => `${step.verb}: ${step.code}`),
+    ["start with: st", "look inside for: title", 'run it with: "Financial Data Extraction Tool"'],
+  );
+});
+
+test("if statements render as a YES/NO flowchart and loops as a repeat cycle", () => {
+  const source = `def check(n, items):\n    if n > 0:\n        print("yes")\n    else:\n        print("no")\n    for item in items:\n        print(item)\n`;
+  const decision = explain(source, "python", "if");
+  assert.equal(decision.flow?.shape, "decision");
+  const html = renderPanel(decision, { nonce: "n", cspSource: "x", displayPath: "a.py", aiEnabled: false, followCursor: false });
+  assert.ok(html.includes("fc-diamond") && html.includes("✔ YES") && html.includes("✘ NO"));
+  const loop = explain(source, "python", "for item");
+  assert.equal(loop.flow?.shape, "loop");
+  assert.ok(renderPanel(loop, { nonce: "n", cspSource: "x", displayPath: "a.py", aiEnabled: false, followCursor: false }).includes("fc-back"));
 });

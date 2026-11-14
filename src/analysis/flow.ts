@@ -111,7 +111,7 @@ export function buildFlow(
     case "for":
     case "foreach": {
       const header = headerText(context, statement, keywordIndex);
-      row("FOR EACH", "if", r`round described by ${c(header)}`);
+      row("FOR EACH", "if", r`${c(header)}`);
       row("DO", "then", r`${body}, once per round`);
       row("WHEN DONE", "else", r`the program carries on after the block`);
       row("NOTE", "note", r`if there is nothing to loop over, the block does not run at all`);

@@ -169,7 +169,7 @@ export function buildExplanation(
       define("String", "A piece of text written inside quotes.");
       whatIf.push({
         change: r`If you changed this text`,
-        effect: r`the code that receives it would get the new text instead. What it does with the text is decided by that code, not by this line.`,
+        effect: r`Whatever receives this text gets the new text instead.`,
         basis: "language",
         evidenceIds: [selectionId],
       });
@@ -286,13 +286,13 @@ export function buildExplanation(
             const lines = otherUses.map((occurrence) => occurrence.line);
             whatIf.push({
               change: r`If you renamed ${c(name)} on the import line`,
-              effect: r`the ${plural(otherUses.length, "other place")} in this file that write${otherUses.length === 1 ? "s" : ""} ${c(name)} (${formatLineList(lines)}) would need the new name too. Otherwise the program would stop with ${errorName} there.`,
+              effect: r`${capitalizeFirst(formatLineList(lines))} would break with ${errorName}, because ${otherUses.length === 1 ? "it still says" : "they still say"} ${c(name)}.`,
               basis: "source",
               evidenceIds: [id],
             });
             whatIf.push({
               change: r`If you deleted the import on line ${binding.line + 1}`,
-              effect: r`those ${plural(otherUses.length, "place")} would have nothing to refer to.`,
+              effect: r`${capitalizeFirst(formatLineList(lines))} would have nothing to point to.`,
               basis: "language",
               evidenceIds: [id],
             });
@@ -322,15 +322,15 @@ export function buildExplanation(
             whatIf.push({
               change: r`If you renamed ${c(name)}`,
               effect: otherUses.length > 0
-                ? r`the ${plural(otherUses.length, "other place")} in this file that write${otherUses.length === 1 ? "s" : ""} ${c(name)} (${formatLineList(otherUses.map((occurrence) => occurrence.line))}) would need the new name. Other files may use it too.`
-                : r`anything that uses it by name would break. Nexus found no other use in this file, but other files may use it.`,
+                ? r`${capitalizeFirst(formatLineList(otherUses.map((occurrence) => occurrence.line)))} would break unless renamed too. Other files may use it as well.`
+                : r`Any code that uses it by name would break. None found in this file; other files may use it.`,
               basis: "source",
               evidenceIds: [id],
             });
             if (calls.length > 0) {
               whatIf.push({
                 change: r`If you added or removed an input`,
-                effect: r`the ${plural(calls.length, "place")} written as a call (${formatLineList(calls.map((occurrence) => occurrence.line))}) would need to pass matching values.`,
+                effect: r`The calls on ${formatLineList(calls.map((occurrence) => occurrence.line))} would need to change to match.`,
                 basis: "language",
                 evidenceIds: [id],
               });
@@ -395,7 +395,7 @@ export function buildExplanation(
         node("origin", "input of function", scope?.name ?? assignment.statementText, "source", id);
         whatIf.push({
           change: r`If a caller passes a different value`,
-          effect: r`${c(name)} holds that value everywhere inside the function.`,
+          effect: r`${c(name)} holds that value inside the function.`,
           basis: "language",
           evidenceIds: [id],
         });
@@ -429,7 +429,7 @@ export function buildExplanation(
           claim(meaning, "language", r`With several names on the left, ${profile.label} splits the result of ${c(shorten(assignment.valueText, 40))} into pieces by position. ${c(name)} receives the ${ordinal(assignment.indexAmongSiblings)} piece.`);
           whatIf.push({
             change: r`If you swapped the order of ${joinCode(assignment.siblingNames)}`,
-            effect: r`${c(name)} would receive a different piece of the result.`,
+            effect: r`${c(name)} gets a different piece.`,
             basis: "language",
             evidenceIds: [id],
           });
@@ -455,8 +455,8 @@ export function buildExplanation(
       whatIf.push({
         change: r`If you changed ${c(shorten(assignment.valueText, 40))} on line ${line}`,
         effect: laterUses.length > 0
-          ? r`${c(name)} would hold a different value in the ${plural(laterUses.length, "later place")} that use${laterUses.length === 1 ? "s" : ""} it (${formatLineList(laterUses.map((occurrence) => occurrence.line))}), unless another line gives it a new value first.`
-          : r`${c(name)} would hold a different value. Nexus found no later use of it in this file.`,
+          ? r`${c(name)} holds a different value on ${formatLineList(laterUses.map((occurrence) => occurrence.line))}.`
+          : r`${c(name)} holds a different value. (No later use found in this file.)`,
         basis: "source",
         evidenceIds: [id],
       });
@@ -521,7 +521,7 @@ export function buildExplanation(
       described.literalArguments.slice(0, 1).forEach((argument) => {
         whatIf.push({
           change: r`If you changed ${c(shorten(argument, 40))}`,
-          effect: r`${c(described.calleeText)} would receive that new value instead. What it does with it is decided inside ${c(described.calleeText)}, not on this line.`,
+          effect: r`${c(described.calleeText)} gets the new value instead. What it does with it is up to ${c(described.calleeText)}.`,
           basis: "language",
           evidenceIds: [selectionId],
         });
@@ -700,7 +700,7 @@ export function buildExplanation(
     if (block && analysis.focusKind === "keyword" && ["if", "elif", "while"].includes(name)) {
       whatIf.push({
         change: r`If the condition were never true`,
-        effect: r`the block it controls would never run.`,
+        effect: r`The block it controls would never run.`,
         basis: "language",
         evidenceIds: [selectionId],
       });
@@ -953,6 +953,10 @@ function describeArguments(context: FileContext, args: readonly [number, number]
   });
 
   return parts;
+}
+
+function capitalizeFirst(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function firstSentence(text: string): string {

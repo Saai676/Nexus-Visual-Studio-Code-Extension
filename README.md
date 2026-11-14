@@ -12,17 +12,20 @@ Turn on **Follow cursor** in the panel to have it update as you click around.
 
 ## What the panel shows
 
+Visual first, words second:
+
 | Section | What it is |
 |---|---|
-| What this means | 2–3 plain sentences about the selection, each tagged with where it came from |
-| AI summary *(optional)* | What the code does in this project, written by an AI that only sees workspace files, with checked line citations |
-| Read it piece by piece | The expression split into coloured, labelled chips |
-| How it connects | Concept map: where it comes from → what you selected → what it is used for |
-| If / then | How an `if`, loop, `with`, `try`, function or `return` steers the program |
-| If you change this… | What a rename or a different value would affect, from the code |
-| In the rest of the project | The definition in another file, the author's own comment, files that import this one |
-| What Nexus can't tell you | Honest unknowns |
-| Check the evidence | Every location used, a glossary, limits, raw language-server status |
+| **Headline** | One big line: `st` = short name for `streamlit` |
+| Read it left to right | The expression as numbered boxes with arrows: `st` → look inside for `title` → run it with `"…"` |
+| The pieces | Each part of the code as a coloured, labelled chip (click a chip for its meaning) |
+| How it connects | Concept map: where it comes from → what you selected → what it's used for |
+| Flowchart | `if` → YES/NO branches; loops → a repeat cycle; `with`, `try`, functions, `return` → steps |
+| If you change this | **change → effect** cards |
+| AI summary *(optional)* | What it does in this project, written by an AI that only sees workspace files, with checked citations |
+| Explain in words *(folded)* | The full written explanation, project context and documentation |
+| What Nexus can't tell you *(folded)* | Honest unknowns |
+| Evidence, glossary, limits *(folded)* | Every location used, the words explained, analysis limits |
 
 Evidence tags: **seen in file** (read in source), **language server** (reported by VS Code), **language rule** (general language knowledge), **name match** (same spelling only, not proof), **AI**.
 

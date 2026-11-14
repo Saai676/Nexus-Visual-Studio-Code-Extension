@@ -2,7 +2,7 @@
   "name": "nexus",
   "displayName": "Nexus",
   "description": "Understand unfamiliar code: plain-English, visual, evidence-backed explanations of whatever you select.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "engines": {
     "vscode": "^1.113.0"

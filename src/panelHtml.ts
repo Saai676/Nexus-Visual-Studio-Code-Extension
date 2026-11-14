@@ -12,6 +12,8 @@ import type {
   Claim,
   Evidence,
   Explanation,
+  Flow,
+  FlowRow,
   MapNode,
   Rich,
 } from "./analysis/explanationModel";
@@ -121,7 +123,7 @@ function breakdown(parts: readonly BreakdownPart[], truncated: boolean): string 
     .map(({ part, index }) => `<li data-legend-item="${index}"><span class="legend-swatch swatch-${part.role}"></span><span>${rich(part.detail!)}</span></li>`)
     .join("");
 
-  return `<div class="chips" role="list">${chips}</div>${truncated ? `<p class="muted small">Long expression: only the first part is broken down.</p>` : ""}<ul class="legend">${legend}</ul>`;
+  return `<div class="chips" role="list">${chips}</div>${truncated ? `<p class="muted small">Long expression: only the first part is broken down.</p>` : ""}${legend ? `<details class="legend-box"><summary>What each piece means</summary><ul class="legend">${legend}</ul></details>` : ""}`;
 }
 
 function mapColumn(nodes: readonly MapNode[], column: MapNode["column"], title: string): string {
@@ -197,6 +199,7 @@ ${body}
 function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evidence>, options: PanelRenderOptions): string {
   const parts: string[] = [];
 
+  // 1. The one-line answer, big.
   parts.push(`<header class="hero">
   <div class="hero-top">
     <span class="pill">${escapeHtml(explanation.kindLabel)}</span>
@@ -204,74 +207,146 @@ function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evid
     <span class="spacer"></span>
     <button type="button" class="toggle${options.followCursor ? " on" : ""}" data-command="toggleFollow" title="Update this panel automatically as you move the cursor">${options.followCursor ? "● Following cursor" : "○ Follow cursor"}</button>
   </div>
-  <h1><code>${escapeHtml(explanation.heading)}</code></h1>
-  <p class="muted small">${escapeHtml(options.displayPath)} · line ${explanation.range.start.line + 1}</p>
+  <p class="headline">${rich(explanation.headline)}</p>
+  <p class="muted small where"><code>${escapeHtml(explanation.heading)}</code> · ${escapeHtml(options.displayPath)} line ${explanation.range.start.line + 1}</p>
 </header>`);
 
-  parts.push(section("meaning", "💡", "What this means", claims(explanation.meaning, evidence, "claims claims-lead"), "card-lead"));
-
-  parts.push(section("ai", "✨", "AI summary: what it does in this project", `<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
-
-  if (explanation.breakdown.length > 0) {
-    parts.push(section("syntax", "🧩", "Read it piece by piece", breakdown(explanation.breakdown, explanation.breakdownTruncated)));
+  // 2. Read it left to right.
+  if (explanation.steps.length > 1) {
+    const boxes = explanation.steps
+      .map((step, index) => `${index > 0 ? `<span class="step-arrow" aria-hidden="true">→</span>` : ""}<div class="step"><span class="step-num">${index + 1}</span><span class="step-verb">${escapeHtml(step.verb)}</span><code class="step-code">${escapeHtml(step.code)}</code></div>`)
+      .join("");
+    parts.push(section("steps", "➡️", "Read it left to right", `<div class="steps">${boxes}</div>`));
   }
 
+  // 3. The pieces.
+  if (explanation.breakdown.length > 0) {
+    parts.push(section("syntax", "🧩", "The pieces", breakdown(explanation.breakdown, explanation.breakdownTruncated)));
+  }
+
+  // 4. Connections.
   if (explanation.map.nodes.length > 0) {
     parts.push(section("map", "🗺️", "How it connects", conceptMap(explanation.map.nodes)));
   }
 
+  // 5. Flowchart.
   if (explanation.flow) {
-    const rows = explanation.flow.rows
-      .map((row) => `<div class="flow-row flow-${row.tone}"><span class="flow-tag">${escapeHtml(row.tag)}</span><span class="flow-text">${rich(row.text)}</span></div>`)
-      .join("");
-    parts.push(section("flow", "🔀", explanation.flow.title, `<div class="flow">${rows}</div><p class="muted small">${tag("language")} This is how the language works in general, not proof that this code runs.</p>`));
+    parts.push(section("flow", "🔀", explanation.flow.title, `${flowchart(explanation.flow)}<p class="muted small">${tag("language")} How the language works in general, not proof this code runs.</p>`));
   }
 
-  if (explanation.fits.length > 0) {
-    parts.push(section("fits", "📄", "How it fits into this file", claims(explanation.fits, evidence)));
-  }
-
+  // 6. Change → effect.
   if (explanation.whatIf.length > 0) {
     const cards = explanation.whatIf
-      .map((entry) => `<div class="whatif">${tag(entry.basis)}<div class="whatif-change">${rich(entry.change)}…</div><div class="whatif-effect">→ ${rich(entry.effect)}</div>${evidenceLinks(entry.evidenceIds, evidence)}</div>`)
+      .map((entry) => `<div class="whatif"><div class="whatif-box whatif-change"><span class="whatif-kicker">change</span><span>${rich(stripIf(entry.change))}</span></div><div class="whatif-arrow" aria-hidden="true">→</div><div class="whatif-box whatif-effect"><span class="whatif-kicker">effect</span><span>${rich(capitalizeRich(entry.effect))}</span><div class="whatif-foot">${tag(entry.basis)}${evidenceLinks(entry.evidenceIds, evidence)}</div></div></div>`)
       .join("");
-    parts.push(section("whatif", "🔧", "If you change this…", `<div class="whatifs">${cards}</div>`));
+    parts.push(section("whatif", "🔧", "If you change this", `<div class="whatifs">${cards}</div>`));
   }
 
+  // 7. AI summary (optional).
+  parts.push(section("ai", "✨", "AI summary: what it does in this project", `<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
+
+  // 8. Words, folded away.
+  const words: string[] = [];
+  words.push(`<h3>What it means</h3>${claims(explanation.meaning, evidence)}`);
+  if (explanation.fits.length > 0) {
+    words.push(`<h3>In this file</h3>${claims(explanation.fits, evidence)}`);
+  }
   if (explanation.project.length > 0) {
-    parts.push(section("project", "🧭", "In the rest of the project", claims(explanation.project, evidence)));
+    words.push(`<h3>In the rest of the project</h3>${claims(explanation.project, evidence)}`);
   }
-
   if (explanation.documentation.length > 0) {
-    const docs = explanation.documentation
-      .map((entry) => `<details><summary>Documentation for <code>${escapeHtml(entry.subject)}</code> ${tag("provider")}</summary><pre class="doc">${escapeHtml(entry.text)}${entry.truncated ? "\n…" : ""}</pre></details>`)
-      .join("");
-    parts.push(section("docs", "📘", "Documentation from the language server", docs));
+    words.push(`<h3>Documentation ${tag("provider")}</h3>${explanation.documentation.map((entry) => `<p class="small"><code>${escapeHtml(entry.subject)}</code></p><pre class="doc">${escapeHtml(entry.text)}${entry.truncated ? "\n…" : ""}</pre>`).join("")}`);
   }
+  const projectHint = explanation.project.length > 0 ? ` · ${explanation.project.length} from other files` : "";
+  parts.push(`<section class="card card-quiet"><details class="words"><summary><span class="icon" aria-hidden="true">📖</span>Explain in words <span class="muted small">(${explanation.meaning.length + explanation.fits.length + explanation.project.length} notes${projectHint})</span></summary>${words.join("")}</details>${
+    explanation.unknowns.length > 0
+      ? `<details class="unknown-box"><summary><span class="icon" aria-hidden="true">❓</span>What Nexus can't tell you <span class="muted small">(${explanation.unknowns.length})</span></summary><ul class="unknowns">${explanation.unknowns.map((entry) => `<li>${rich(entry)}</li>`).join("")}</ul></details>`
+      : ""
+  }${moreDetails(explanation)}</section>`);
 
-  if (explanation.unknowns.length > 0) {
-    parts.push(section("unknowns", "❓", "What Nexus can't tell you", `<ul class="unknowns">${explanation.unknowns.map((entry) => `<li>${rich(entry)}</li>`).join("")}</ul>`, "card-unknown"));
+  return parts.join("\n");
+}
+
+const IMPERATIVE: Readonly<Record<string, string>> = {
+  renamed: "Rename",
+  changed: "Change",
+  deleted: "Delete",
+  swapped: "Swap",
+  added: "Add",
+};
+
+/** "If you renamed x" → "Rename x"; other "If …" phrases are kept as written. */
+function stripIf(text: Rich): Rich {
+  const [first, ...rest] = text;
+  if (typeof first !== "string") {
+    return text;
   }
+  const match = /^If you (\w+)(.*)$/s.exec(first);
+  if (!match) {
+    return text;
+  }
+  const verb = IMPERATIVE[match[1]] ?? match[1].charAt(0).toUpperCase() + match[1].slice(1);
+  return [`${verb}${match[2].replace(/^ or removed/, " or remove")}`, ...rest];
+}
 
-  const glossary = explanation.glossary.length > 0
-    ? `<details><summary>Words used here (${explanation.glossary.length})</summary><dl class="glossary">${explanation.glossary.map((entry) => `<dt>${escapeHtml(entry.term)}</dt><dd>${escapeHtml(entry.plain)}</dd>`).join("")}</dl></details>`
-    : "";
+function capitalizeRich(text: Rich): Rich {
+  const [first, ...rest] = text;
+  return typeof first === "string" ? [first.charAt(0).toUpperCase() + first.slice(1), ...rest] : text;
+}
+
+function moreDetails(explanation: Explanation): string {
   const evidenceList = explanation.evidence.length > 0
-    ? `<details><summary>All evidence (${explanation.evidence.length})</summary><ul class="evidence">${explanation.evidence
+    ? `<details><summary><span class="icon" aria-hidden="true">🔎</span>All evidence <span class="muted small">(${explanation.evidence.length})</span></summary><ul class="evidence">${explanation.evidence
         .map((entry) => `<li><button type="button" class="evidence-row" data-evidence-id="${escapeHtml(entry.id)}">${tag(entry.basis)}<span class="evidence-label">${escapeHtml(entry.label)}</span><span class="evidence-loc">${escapeHtml(lineLabel(entry))}</span>${entry.excerpt ? `<code class="evidence-excerpt">${escapeHtml(entry.excerpt)}</code>` : ""}</button></li>`)
         .join("")}</ul></details>`
     : "";
+  const glossary = explanation.glossary.length > 0
+    ? `<details><summary><span class="icon" aria-hidden="true">🔤</span>Words used here <span class="muted small">(${explanation.glossary.length})</span></summary><dl class="glossary">${explanation.glossary.map((entry) => `<dt>${escapeHtml(entry.term)}</dt><dd>${escapeHtml(entry.plain)}</dd>`).join("")}</dl></details>`
+    : "";
+  const limits = explanation.limits.length > 0
+    ? `<details${explanation.supportLevel === "generic" ? " open" : ""}><summary><span class="icon" aria-hidden="true">⚠️</span>Limits <span class="muted small">(${explanation.limits.length})</span></summary><ul class="plain">${explanation.limits.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")}</ul></details>`
+    : "";
   const status = explanation.providerStatus.length > 0
-    ? `<details><summary>Language server status</summary><ul class="plain">${explanation.providerStatus
+    ? `<details><summary><span class="icon" aria-hidden="true">🛠️</span>Language server status</summary><ul class="plain">${explanation.providerStatus
         .map((line) => `<li><strong>${escapeHtml(line.label)}:</strong> ${escapeHtml(line.status)} (${line.count})${line.message ? ` · <span class="muted">${escapeHtml(line.message)}</span>` : ""}</li>`)
         .join("")}</ul></details>`
     : "";
-  const limits = [...explanation.limits];
-  const limitsHtml = limits.length > 0 ? `<details${explanation.supportLevel === "generic" ? " open" : ""}><summary>Limits of this explanation (${limits.length})</summary><ul class="plain">${limits.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")}</ul></details>` : "";
+  return evidenceList + glossary + limits + status;
+}
 
-  parts.push(`<section class="card card-quiet" id="more"><h2><span class="icon" aria-hidden="true">🔎</span>Check the evidence</h2>${evidenceList}${glossary}${limitsHtml}${status}</section>`);
+/** Draws the flow as a small diagram: a decision with YES/NO branches, a loop, or a list of steps. */
+function flowchart(flow: Flow): string {
+  const rowsByTone = (tone: FlowRow["tone"]): FlowRow[] => flow.rows.filter((row) => row.tone === tone);
+  const box = (row: FlowRow, cls: string): string => `<div class="fc-box ${cls}"><span class="fc-tag">${escapeHtml(row.tag)}</span><span class="fc-text">${rich(row.text)}</span></div>`;
+  const notes = rowsByTone("note").map((row) => `<div class="fc-note">💡 ${rich(row.text)}</div>`).join("");
+  const condition = rowsByTone("if")[0];
+  const yes = rowsByTone("then")[0];
+  const no = rowsByTone("else")[0];
 
-  return parts.join("\n");
+  if (flow.shape === "decision" && condition && (yes || no)) {
+    return `<div class="fc fc-decision">
+  <div class="fc-diamond"><span class="fc-tag">${escapeHtml(condition.tag)}</span><span class="fc-text">${rich(condition.text)}</span></div>
+  <div class="fc-split" aria-hidden="true"><span class="fc-line-left"></span><span class="fc-line-right"></span></div>
+  <div class="fc-branches">
+    <div class="fc-branch"><span class="fc-branch-label fc-yes">✔ YES</span>${yes ? box(yes, "fc-then") : ""}</div>
+    <div class="fc-branch"><span class="fc-branch-label fc-no">✘ NO</span>${no ? box(no, "fc-else") : ""}</div>
+  </div>
+  ${notes}
+</div>`;
+  }
+
+  if (flow.shape === "loop" && condition && yes) {
+    return `<div class="fc fc-loop">
+  ${box(condition, "fc-if")}
+  <div class="fc-down" aria-hidden="true">↓</div>
+  <div class="fc-cycle">${box(yes, "fc-then")}<div class="fc-back" aria-hidden="true">↺ <span>repeat</span></div></div>
+  ${no ? `<div class="fc-down" aria-hidden="true">↓ when finished</div>${box(no, "fc-else")}` : ""}
+  ${notes}
+</div>`;
+  }
+
+  const steps = flow.rows.filter((row) => row.tone !== "note");
+  return `<div class="fc fc-steps">${steps.map((row, index) => `${index > 0 ? `<div class="fc-down" aria-hidden="true">↓</div>` : ""}${box(row, `fc-${row.tone}`)}`).join("")}${notes}</div>`;
 }
 
 const STYLES = `
@@ -382,6 +457,53 @@ summary{cursor:pointer;font-weight:600;padding:2px 0}
 .evidence-excerpt{grid-column:1/-1;white-space:pre-wrap}
 pre.doc{white-space:pre-wrap;font-family:var(--vscode-editor-font-family);font-size:.9em;background:var(--vscode-textCodeBlock-background,rgba(128,128,128,.12));padding:10px;border-radius:6px;max-height:260px;overflow:auto}
 .empty h1{font-size:1.1em}
+.headline{font-size:1.45em;line-height:1.35;font-weight:600;margin:10px 0 4px;overflow-wrap:anywhere}
+.headline code{font-size:.95em;padding:2px 7px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--fg)}
+.where code{background:none;padding:0}
+h3{font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:14px 0 6px}
+.steps{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.step{display:flex;flex-direction:column;align-items:center;gap:4px;border:1px solid var(--border);border-radius:10px;padding:8px 12px;background:var(--bg);position:relative;min-width:84px}
+.step-num{position:absolute;top:-9px;left:-9px;width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--bg);font-size:.72em;font-weight:800;display:flex;align-items:center;justify-content:center}
+.step-verb{font-size:.72em;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+.step-code{font-size:1.05em}
+.step-arrow{font-size:1.4em;color:var(--muted)}
+.legend-box{border-top:1px dashed var(--border);margin-top:4px}
+.legend-box summary{font-weight:500;color:var(--muted);font-size:.9em}
+.fc{display:flex;flex-direction:column;align-items:center;gap:4px}
+.fc-box{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;border-radius:10px;padding:9px 14px;border:2px solid var(--border);background:var(--bg);max-width:460px;width:100%}
+.fc-tag{font-size:.7em;font-weight:800;letter-spacing:.07em}
+.fc-if{border-color:var(--c-keyword)}.fc-if .fc-tag{color:var(--c-keyword)}
+.fc-then{border-color:var(--b-source)}.fc-then .fc-tag{color:var(--b-source)}
+.fc-else{border-color:var(--b-provider)}.fc-else .fc-tag{color:var(--b-provider)}
+.fc-diamond{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;padding:16px 34px;max-width:420px;background:color-mix(in srgb,var(--c-keyword) 16%,var(--bg));clip-path:polygon(12% 0,88% 0,100% 50%,88% 100%,12% 100%,0 50%)}
+.fc-diamond .fc-tag{color:var(--c-keyword)}
+.fc-split{position:relative;width:60%;height:18px}
+.fc-line-left,.fc-line-right{position:absolute;top:0;width:50%;height:100%;border-top:2px solid var(--border)}
+.fc-line-left{left:0;border-left:2px solid var(--border);border-top-left-radius:8px}
+.fc-line-right{right:0;border-right:2px solid var(--border);border-top-right-radius:8px}
+.fc-branches{display:grid;grid-template-columns:1fr 1fr;gap:12px;width:100%}
+.fc-branch{display:flex;flex-direction:column;align-items:center;gap:5px}
+.fc-branch-label{font-size:.75em;font-weight:800;letter-spacing:.06em;padding:1px 9px;border-radius:999px}
+.fc-yes{background:color-mix(in srgb,var(--b-source) 22%,transparent);color:var(--b-source)}
+.fc-no{background:color-mix(in srgb,var(--b-provider) 22%,transparent);color:var(--b-provider)}
+.fc-down{color:var(--muted);font-size:1.1em;line-height:1.2}
+.fc-cycle{display:flex;align-items:center;gap:10px;width:100%;justify-content:center}
+.fc-cycle .fc-box{flex:1}
+.fc-back{font-size:1.5em;color:var(--b-source);display:flex;flex-direction:column;align-items:center;line-height:1}
+.fc-back span{font-size:.45em;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+.fc-note{font-size:.86em;color:var(--muted);margin-top:8px;text-align:center}
+.whatifs{display:flex;flex-direction:column;gap:10px}
+.whatifs .whatif{display:grid;grid-template-columns:1fr auto 1.4fr;align-items:stretch;gap:8px;border:none;padding:0;background:none}
+.whatif-box{border-radius:10px;padding:9px 12px;display:flex;flex-direction:column;gap:4px}
+.whatif-change{background:color-mix(in srgb,var(--c-keyword) 14%,var(--bg));border:1px solid color-mix(in srgb,var(--c-keyword) 45%,transparent);font-weight:600}
+.whatif-effect{background:color-mix(in srgb,var(--b-provider) 12%,var(--bg));border:1px solid color-mix(in srgb,var(--b-provider) 40%,transparent)}
+.whatif-kicker{font-size:.68em;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:800}
+.whatif-arrow{align-self:center;font-size:1.6em;color:var(--muted)}
+.whatif-foot{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:2px}
+@media (max-width:560px){.whatif{grid-template-columns:1fr}.whatif-arrow{transform:rotate(90deg);justify-self:center}.fc-branches{grid-template-columns:1fr}}
+details.words>summary,details.unknown-box>summary,.card-quiet details>summary{display:flex;align-items:center;gap:8px}
+.card-quiet details{border-top:1px solid var(--border)}
+.card-quiet details:first-child{border-top:none}
 `;
 
 const SCRIPT = `
@@ -392,7 +514,7 @@ document.addEventListener("click", (event) => {
   if (target.dataset.evidenceId) { vscode.postMessage({ command: "navigate", evidenceId: target.dataset.evidenceId }); return; }
   if (target.dataset.aiCite) { vscode.postMessage({ command: "navigateAi", cite: target.dataset.aiCite }); return; }
   if (target.dataset.command) { vscode.postMessage({ command: target.dataset.command }); return; }
-  if (target.dataset.legend) { highlight(target.dataset.legend); }
+  if (target.dataset.legend) { const box = document.querySelector(".legend-box"); if (box) { box.open = true; } highlight(target.dataset.legend); }
 });
 document.addEventListener("keydown", (event) => {
   const target = event.target;
