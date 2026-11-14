@@ -77,27 +77,7 @@ export class AiSummarizer {
     return false;
   }
 
-  /** Checks the setting, workspace trust and consent. Returns a message when the AI may not be used. */
-  async gate(): Promise<string | undefined> {
-    if (!this.isEnabled()) {
-      return "AI is off. Turn on the setting “Nexus › AI: Enabled” to use it.";
-    }
-    if (!vscode.workspace.isTrusted) {
-      return "AI is disabled in untrusted workspaces.";
-    }
-    if (!(await this.ensureConsent())) {
-      return "Permission to send code to the AI model was not given.";
-    }
-    return undefined;
-  }
-
-  /** Sends one prompt with the given rules to the configured model. Throws on failure. */
-  async complete(systemPrompt: string, prompt: string, token: vscode.CancellationToken): Promise<{ text: string; model: string }> {
-    const provider = vscode.workspace.getConfiguration("nexus").get<string>("ai.provider", "vscode");
-    return provider === "gemini" ? this.askGemini(prompt, token, systemPrompt) : this.askVscodeModel(prompt, token, systemPrompt);
-  }
-
-  private async askVscodeModel(prompt: string, token: vscode.CancellationToken, systemPrompt = SYSTEM_PROMPT): Promise<{ text: string; model: string }> {
+  private async askVscodeModel(prompt: string, token: vscode.CancellationToken): Promise<{ text: string; model: string }> {
     if (!("lm" in vscode) || typeof vscode.lm?.selectChatModels !== "function") {
       throw new UnavailableError("This version of VS Code does not offer language model access.");
     }
@@ -111,7 +91,7 @@ export class AiSummarizer {
     }
 
     // System rules go in the first user message: the VS Code API has no separate system role.
-    const messages = [vscode.LanguageModelChatMessage.User(`${systemPrompt}\n\n${prompt}`)];
+    const messages = [vscode.LanguageModelChatMessage.User(`${SYSTEM_PROMPT}\n\n${prompt}`)];
     const response = await withTimeout(model.sendRequest(messages, { justification: "Nexus explains the selected code using files from this workspace." }, token));
     let text = "";
     for await (const fragment of response.text) {
@@ -123,7 +103,7 @@ export class AiSummarizer {
     return { text, model: model.name || model.family || model.id };
   }
 
-  private async askGemini(prompt: string, token: vscode.CancellationToken, systemPrompt = SYSTEM_PROMPT): Promise<{ text: string; model: string }> {
+  private async askGemini(prompt: string, token: vscode.CancellationToken): Promise<{ text: string; model: string }> {
     const apiKey = await this.context.secrets.get("nexus.geminiApiKey");
     if (!apiKey) {
       throw new UnavailableError("No Gemini API key is stored. Run “Nexus: Set Gemini API Key” first.");
@@ -141,7 +121,7 @@ export class AiSummarizer {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemPrompt }] },
+            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             generationConfig: { temperature: 0.2, responseMimeType: "application/json" },
           }),
@@ -161,7 +141,7 @@ export class AiSummarizer {
   }
 }
 
-export class UnavailableError extends Error {}
+class UnavailableError extends Error {}
 
 function withTimeout<T>(promise: Thenable<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {

@@ -2,16 +2,6 @@
 
 A VS Code extension that explains whatever code you select in plain English, visually, and shows you the evidence behind every claim.
 
-## Install
-
-1. Download [`releases/nexus-0.5.0.vsix`](releases/nexus-0.5.0.vsix) (click **Download raw file** on GitHub).
-2. In VS Code, open **Extensions** (Cmd/Ctrl+Shift+X) → **`···`** menu → **Install from VSIX…** → choose the file.
-3. Run **Developer: Reload Window** from the Command Palette.
-
-Or from a terminal: `code --install-extension nexus-0.5.0.vsix`
-
-Requires VS Code 1.113 or newer.
-
 ## Use it
 
 1. Open any file and click on (or select) some code.
@@ -27,7 +17,6 @@ Visual first, words second:
 | Section | What it is |
 |---|---|
 | **Headline** | One big line: `st` = short name for `streamlit` |
-| Ask about this *(AI, optional)* | A chat box: ask anything about the selection or the project. It starts with what Nexus already knows, can open other project files or search the project, remembers the conversation, and answers with clickable `file:line` citations. Workspace files only |
 | Read it left to right | The expression as numbered boxes with arrows: `st` → look inside for `title` → run it with `"…"` |
 | The pieces | Each part of the code as a coloured, labelled chip (click a chip for its meaning) |
 | How it connects | Concept map: where it comes from → what you selected → what it's used for |

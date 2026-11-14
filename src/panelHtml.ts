@@ -189,56 +189,6 @@ ${points}
 <p class="muted small">Written by ${escapeHtml(result.model)} using only files from this workspace (${escapeHtml(result.filesSent.map((file) => file.trim()).filter((file, index, all) => all.indexOf(file) === index).join(", "))}). AI can be wrong. Check the cited lines.${result.droppedCitations > 0 ? ` ${result.droppedCitations} citation${result.droppedCitations === 1 ? " was" : "s were"} removed because ${result.droppedCitations === 1 ? "it did" : "they did"} not match the code that was sent.` : ""}</p>`;
 }
 
-function chatBox(explanation: Explanation, enabled: boolean): string {
-  if (!enabled) {
-    return `<p class="muted">Ask questions like “where does this data come from?” and get answers from your own code. Turn on <button type="button" class="link" data-command="enableAi">AI</button> to use it. It only reads files in this workspace.</p>`;
-  }
-  const name = explanation.heading.length > 30 ? "this" : explanation.heading;
-  const starters = [
-    `What does ${name} do in this project?`,
-    "Where does its data come from?",
-    "What would break if I changed it?",
-  ];
-  return `<div id="chat-log" class="chat-log" aria-live="polite"></div>
-<div class="chat-starters">${starters.map((question) => `<button type="button" class="chip-btn" data-ask="${escapeHtml(question)}">${escapeHtml(question)}</button>`).join("")}</div>
-<form id="chat-form" class="chat-form" autocomplete="off">
-  <textarea id="chat-input" rows="2" maxlength="2000" placeholder="Ask anything about this code or the project…"></textarea>
-  <button type="submit" id="chat-send" class="send">Ask</button>
-</form>
-<p class="muted small">Answers come from an AI that only reads files in this workspace. It can open other project files and search the project when it needs to. Check the cited lines.</p>`;
-}
-
-/** Renders one AI chat answer as HTML (citations become clickable chips). */
-export function renderChatAnswer(answer: { text: string; citations: readonly { uri: string; label: string; line: number; excerpt: string }[]; followUps: readonly string[]; droppedCitations: number; lookedUp: readonly string[]; model: string } | { error: string }): string {
-  if ("error" in answer) {
-    return `<div class="bubble bubble-ai bubble-error">${escapeHtml(answer.error)}</div>`;
-  }
-  const paragraphs = answer.text
-    .split(/\n{2,}/)
-    .map((block) => {
-      const lines = block.split(/\n/).map((line) => line.trim()).filter(Boolean);
-      const isList = lines.length > 1 && lines.every((line) => /^([-*•]|\d+[.)])\s+/.test(line));
-      return isList
-        ? `<ul>${lines.map((line) => `<li>${inlineCode(line.replace(/^([-*•]|\d+[.)])\s+/, ""))}</li>`).join("")}</ul>`
-        : `<p>${lines.map(inlineCode).join("<br>")}</p>`;
-    })
-    .join("");
-  const cites = answer.citations.length > 0
-    ? `<div class="jumps">${answer.citations.map((cite) => `<button type="button" class="jump" data-ai-cite="${escapeHtml(cite.uri)}|${cite.line}" title="${escapeHtml(cite.excerpt)}">${escapeHtml(cite.label.trim())}:${cite.line + 1}</button>`).join("")}</div>`
-    : `<div class="muted small">No lines cited, so treat this as general explanation.</div>`;
-  const looked = answer.lookedUp.length > 0 ? `<div class="muted small">🔍 Looked at: ${escapeHtml(answer.lookedUp.join(", "))}</div>` : "";
-  const dropped = answer.droppedCitations > 0 ? `<div class="muted small">${answer.droppedCitations} citation${answer.droppedCitations === 1 ? "" : "s"} removed: not in the code it was shown.</div>` : "";
-  const follow = answer.followUps.length > 0
-    ? `<div class="chat-starters">${answer.followUps.map((question) => `<button type="button" class="chip-btn" data-ask="${escapeHtml(question)}">${escapeHtml(question)}</button>`).join("")}</div>`
-    : "";
-  return `<div class="bubble bubble-ai"><span class="tag tag-ai">AI</span>${paragraphs}${cites}${looked}${dropped}</div>${follow}`;
-}
-
-/** Escapes text and turns \`code\` spans into <code>. */
-function inlineCode(text: string): string {
-  return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
-}
-
 /** "Where this fits in the project": zoom path, connection diagram, and whole-project file map. */
 function projectSection(view: ProjectMapView): string {
   const zoom = view.zoom
@@ -346,9 +296,6 @@ function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evid
 
   // 1b. AI summary (optional): the thorough plain-English explanation.
   parts.push(section("ai", "✨", "How this fits into your project", `<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
-
-  // 1c. Ask about this.
-  parts.push(section("ask", "💬", "Ask about this", chatBox(explanation, options.aiEnabled), "card-ask"));
 
   // 2. Read it left to right.
   if (explanation.steps.length > 1) {
@@ -599,27 +546,6 @@ summary{cursor:pointer;font-weight:600;padding:2px 0}
 .evidence-excerpt{grid-column:1/-1;white-space:pre-wrap}
 pre.doc{white-space:pre-wrap;font-family:var(--vscode-editor-font-family);font-size:.9em;background:var(--vscode-textCodeBlock-background,rgba(128,128,128,.12));padding:10px;border-radius:6px;max-height:260px;overflow:auto}
 .empty h1{font-size:1.1em}
-.card-ask{border-left:4px solid var(--accent)}
-.chat-log{display:flex;flex-direction:column;gap:8px;margin-bottom:8px;max-height:520px;overflow:auto}
-.chat-log:empty{display:none}
-.bubble{border-radius:12px;padding:9px 12px;max-width:92%;overflow-wrap:anywhere}
-.bubble p{margin:0 0 6px}.bubble p:last-of-type{margin-bottom:4px}
-.bubble ul{margin:4px 0 6px;padding-left:20px}
-.bubble-user{align-self:flex-end;background:color-mix(in srgb,var(--accent) 22%,var(--bg));border:1px solid color-mix(in srgb,var(--accent) 45%,transparent)}
-.bubble-ai{align-self:flex-start;background:var(--bg);border:1px solid var(--border)}
-.bubble-ai .tag{margin-bottom:4px}
-.bubble-ai .jumps{margin-top:4px}
-.bubble-error{border-color:var(--b-name-match);color:var(--muted)}
-.chat-starters{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 8px}
-.chip-btn{font:inherit;font-size:.85em;border:1px solid var(--border);border-radius:999px;padding:3px 11px;background:transparent;color:var(--fg);cursor:pointer}
-.chip-btn:hover{border-color:var(--focus)}
-.chat-form{display:flex;gap:8px;align-items:flex-end}
-.chat-form textarea{flex:1;font:inherit;resize:vertical;min-height:38px;border-radius:8px;padding:8px 10px;border:1px solid var(--vscode-input-border,var(--border));background:var(--vscode-input-background,var(--bg));color:var(--vscode-input-foreground,var(--fg))}
-.chat-form textarea:focus{outline:none;border-color:var(--focus)}
-.send{font:inherit;font-weight:600;border:none;border-radius:8px;padding:8px 16px;background:var(--vscode-button-background,var(--accent));color:var(--vscode-button-foreground,#fff);cursor:pointer}
-.send:disabled{opacity:.5;cursor:default}
-.typing{display:flex;gap:8px;align-items:center;color:var(--muted)}
-
 .ai-role{display:flex;flex-direction:column;gap:3px;border-left:3px solid var(--b-ai);padding:4px 10px;margin:4px 0 10px}
 .ai-ios{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:8px 0}
 .ai-io{border-radius:9px;padding:8px 11px;display:flex;flex-direction:column;gap:3px;border:1px solid var(--border);background:var(--bg)}
@@ -716,9 +642,8 @@ details.words>summary,details.unknown-box>summary,.card-quiet details>summary{di
 const SCRIPT = `
 const vscode = acquireVsCodeApi();
 document.addEventListener("click", (event) => {
-  const target = event.target instanceof Element ? event.target.closest("[data-evidence-id],[data-ai-cite],[data-command],[data-legend],[data-open-uri],[data-ask]") : null;
+  const target = event.target instanceof Element ? event.target.closest("[data-evidence-id],[data-ai-cite],[data-command],[data-legend],[data-open-uri]") : null;
   if (!target) { return; }
-  if (target.dataset.ask) { ask(target.dataset.ask); return; }
   if (target.dataset.openUri) { vscode.postMessage({ command: "openFile", uri: target.dataset.openUri }); return; }
   if (target.dataset.evidenceId) { vscode.postMessage({ command: "navigate", evidenceId: target.dataset.evidenceId }); return; }
   if (target.dataset.aiCite) { vscode.postMessage({ command: "navigateAi", cite: target.dataset.aiCite }); return; }
@@ -736,58 +661,8 @@ function highlight(index) {
   if (chip) { chip.classList.add("active"); }
   if (item) { item.classList.add("active"); item.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
 }
-const chatForm = document.getElementById("chat-form");
-const chatInput = document.getElementById("chat-input");
-const chatLog = document.getElementById("chat-log");
-const chatSend = document.getElementById("chat-send");
-let waiting = false;
-function ask(question) {
-  const text = (question || "").trim();
-  if (!text || waiting || !chatLog) { return; }
-  waiting = true;
-  if (chatSend) { chatSend.disabled = true; }
-  const bubble = document.createElement("div");
-  bubble.className = "bubble bubble-user";
-  bubble.textContent = text;
-  chatLog.appendChild(bubble);
-  const typing = document.createElement("div");
-  typing.className = "bubble bubble-ai typing";
-  typing.id = "chat-typing";
-  typing.innerHTML = '<span class="spinner"></span><span id="chat-status">Reading your code…</span>';
-  chatLog.appendChild(typing);
-  chatLog.scrollTop = chatLog.scrollHeight;
-  document.querySelectorAll(".chat-starters").forEach((row) => row.remove());
-  if (chatInput) { chatInput.value = ""; }
-  vscode.postMessage({ command: "ask", text });
-}
-if (chatForm) {
-  chatForm.addEventListener("submit", (event) => { event.preventDefault(); ask(chatInput ? chatInput.value : ""); });
-}
-if (chatInput) {
-  chatInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ask(chatInput.value); }
-  });
-}
 window.addEventListener("message", (event) => {
   const message = event.data;
-  if (message && message.command === "chatStatus" && typeof message.text === "string") {
-    const status = document.getElementById("chat-status");
-    if (status) { status.textContent = message.text; }
-    return;
-  }
-  if (message && message.command === "chatAnswer" && typeof message.html === "string" && chatLog) {
-    const typing = document.getElementById("chat-typing");
-    if (typing) { typing.remove(); }
-    const holder = document.createElement("div");
-    holder.className = "chat-entry";
-    holder.innerHTML = message.html;
-    chatLog.appendChild(holder);
-    chatLog.scrollTop = chatLog.scrollHeight;
-    waiting = false;
-    if (chatSend) { chatSend.disabled = false; }
-    if (chatInput) { chatInput.focus(); }
-    return;
-  }
   if (message && message.command === "aiResult" && typeof message.html === "string") {
     const body = document.getElementById("ai-body");
     if (body) { body.innerHTML = message.html; }
