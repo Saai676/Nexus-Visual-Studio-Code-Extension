@@ -3,3 +3,6 @@ out/
 *.vsix
 .DS_Store
 *.log
+
+# Installable builds are kept in releases/
+!releases/*.vsix

@@ -2,6 +2,16 @@
 
 A VS Code extension that explains whatever code you select in plain English, visually, and shows you the evidence behind every claim.
 
+## Install
+
+1. Download [`releases/nexus-0.5.0.vsix`](releases/nexus-0.5.0.vsix) (click **Download raw file** on GitHub).
+2. In VS Code, open **Extensions** (Cmd/Ctrl+Shift+X) → **`···`** menu → **Install from VSIX…** → choose the file.
+3. Run **Developer: Reload Window** from the Command Palette.
+
+Or from a terminal: `code --install-extension nexus-0.5.0.vsix`
+
+Requires VS Code 1.113 or newer.
+
 ## Use it
 
 1. Open any file and click on (or select) some code.
