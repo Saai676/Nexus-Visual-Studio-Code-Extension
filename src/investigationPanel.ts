@@ -13,6 +13,7 @@ interface PanelMessage {
   readonly command: string;
   readonly evidenceId?: string;
   readonly cite?: string;
+  readonly uri?: string;
 }
 
 /**
@@ -25,6 +26,8 @@ export class InvestigationPanel implements vscode.Disposable {
   private evidenceById = new Map<string, Evidence>();
   /** Lines the current AI summary is allowed to link to, keyed "uri|line". */
   private aiCitations = new Set<string>();
+  /** Files the project map may open. */
+  private openableFiles = new Set<string>();
   private renderVersion = 0;
 
   constructor(private readonly callbacks: PanelCallbacks) {}
@@ -43,6 +46,7 @@ export class InvestigationPanel implements vscode.Disposable {
     this.renderVersion += 1;
     this.evidenceById = new Map(explanation.evidence.map((entry) => [entry.id, entry]));
     this.aiCitations.clear();
+    this.openableFiles = new Set(explanation.projectMap?.files.map((file) => file.uri) ?? []);
 
     panel.title = explanation.hasContent ? `Nexus: ${shorten(explanation.heading, 28)}` : "Nexus";
     panel.webview.html = renderPanel(explanation, {
@@ -123,6 +127,11 @@ export class InvestigationPanel implements vscode.Disposable {
         }
         return;
       }
+      case "openFile":
+        if (raw.uri && this.openableFiles.has(raw.uri)) {
+          await openLocation(raw.uri, 0, 0, 0, 0);
+        }
+        return;
       case "enableAi":
         this.callbacks.onEnableAi();
         return;
@@ -153,12 +162,13 @@ function isPanelMessage(message: unknown): message is PanelMessage {
     return false;
   }
   const candidate = message as Record<string, unknown>;
-  const allowed = ["navigate", "navigateAi", "enableAi", "toggleFollow"];
+  const allowed = ["navigate", "navigateAi", "openFile", "enableAi", "toggleFollow"];
   return (
     typeof candidate.command === "string" &&
     allowed.includes(candidate.command) &&
     (candidate.evidenceId === undefined || (typeof candidate.evidenceId === "string" && candidate.evidenceId.length <= 64)) &&
-    (candidate.cite === undefined || (typeof candidate.cite === "string" && candidate.cite.length <= 2048))
+    (candidate.cite === undefined || (typeof candidate.cite === "string" && candidate.cite.length <= 2048)) &&
+    (candidate.uri === undefined || (typeof candidate.uri === "string" && candidate.uri.length <= 2048))
   );
 }
 

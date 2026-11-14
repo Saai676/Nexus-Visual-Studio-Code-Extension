@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { AiSummarizer, type AiContextFile, type AiRequest } from "./aiSummary";
-import { summarizeDeclarationAt, findImportsOf } from "./analysis/crossFile";
+import { summarizeDeclarationAt } from "./analysis/crossFile";
+import { buildMapView, buildProjectGraph, describeMapForAi, type ProjectFile, type ProjectGraph, type ProjectMapView } from "./analysis/projectMap";
 import {
   buildExplanation,
   type DefinitionContext,
@@ -8,6 +9,7 @@ import {
   type ProviderEvidence,
 } from "./analysis/explanation";
 import { richToPlain, type Explanation } from "./analysis/explanationModel";
+import { enclosingDeclaration } from "./analysis/fileContext";
 import { analyzeSelection, type SelectionAnalysis } from "./analysis/selection";
 import {
   type EvidenceLocation,
@@ -20,37 +22,25 @@ import { investigateSymbol } from "./symbolInvestigator";
 
 const MAX_DOCUMENTATION_CHARACTERS = 1_800;
 const MAX_EXCERPT_FILES = 8;
-const MAX_IMPORTER_SCAN = 400;
 const MAX_IMPORTER_FILE_BYTES = 400_000;
-const IMPORTER_CACHE_MS = 60_000;
 const FOLLOW_DELAY_MS = 650;
 
 const EXCLUDE_GLOB = "**/{node_modules,.git,dist,build,out,.venv,venv,env,__pycache__,target,bin,obj,.next,coverage,vendor}/**";
 
-/** File extensions searched for imports of the current file, by language family. */
-const IMPORT_SEARCH_GLOBS: Readonly<Record<string, string>> = {
-  python: "**/*.py",
-  javascript: "**/*.{js,jsx,mjs,cjs,ts,tsx}",
-  javascriptreact: "**/*.{js,jsx,mjs,cjs,ts,tsx}",
-  typescript: "**/*.{js,jsx,mjs,cjs,ts,tsx}",
-  typescriptreact: "**/*.{js,jsx,mjs,cjs,ts,tsx}",
-  c: "**/*.{c,h,cpp,hpp,cc}",
-  cpp: "**/*.{c,h,cpp,hpp,cc}",
-  rust: "**/*.rs",
-  go: "**/*.go",
-};
 
-interface ImporterCacheEntry {
+const SOURCE_GLOB = "**/*.{py,js,jsx,mjs,cjs,ts,tsx,java,c,h,cpp,hpp,cc,cs,go,rs}";
+const MAX_PROJECT_FILES = 600;
+const PROJECT_CACHE_MS = 45_000;
+
+interface ProjectCacheEntry {
   readonly at: number;
-  readonly importers: ImporterContext[];
-  readonly scanned: number;
-  readonly limited: boolean;
+  readonly graph: ProjectGraph;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Nexus");
   const ai = new AiSummarizer(context);
-  const importerCache = new Map<string, ImporterCacheEntry>();
+  const projectCache = new Map<string, ProjectCacheEntry>();
   let aiCancellation: vscode.CancellationTokenSource | undefined;
   let followTimer: NodeJS.Timeout | undefined;
   let running = 0;
@@ -138,57 +128,84 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const withExcerpts = investigation ? await addExcerpts(investigation, document) : undefined;
     const definitionContexts = withExcerpts && includeProject ? await definitionContextsFor(withExcerpts, document) : [];
-    const importerResult = includeProject && isTopLevelDeclaration(analysis) ? await importersOf(document) : undefined;
+    const projectMap = await projectMapFor(document, analysis, withExcerpts);
+    const importers: ImporterContext[] | undefined =
+      includeProject && isTopLevelDeclaration(analysis) && projectMap
+        ? projectMap.usedBy.map((entry) => ({ uri: entry.uri, line: entry.line, excerpt: entry.excerpt }))
+        : undefined;
 
     return {
       investigation: withExcerpts,
       documentation,
       definitionContexts,
-      importers: importerResult?.importers,
-      importerScan: importerResult ? { filesScanned: importerResult.scanned, limited: importerResult.limited } : undefined,
+      importers,
+      projectMap,
     };
   }
 
-  async function importersOf(document: vscode.TextDocument): Promise<ImporterCacheEntry | undefined> {
-    const glob = IMPORT_SEARCH_GLOBS[document.languageId];
-    if (!glob || document.uri.scheme !== "file" || !vscode.workspace.getWorkspaceFolder(document.uri)) {
+  async function projectGraphFor(folder: vscode.WorkspaceFolder): Promise<ProjectGraph> {
+    const key = folder.uri.toString();
+    const cached = projectCache.get(key);
+    if (cached && Date.now() - cached.at < PROJECT_CACHE_MS) {
+      return cached.graph;
+    }
+    const found = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, SOURCE_GLOB), EXCLUDE_GLOB, MAX_PROJECT_FILES + 1);
+    const files: ProjectFile[] = [];
+    await Promise.all(
+      found.slice(0, MAX_PROJECT_FILES).map(async (uri) => {
+        try {
+          const open = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === uri.toString());
+          let text = open?.getText();
+          if (text === undefined) {
+            const stat = await vscode.workspace.fs.stat(uri);
+            text = stat.size > MAX_IMPORTER_FILE_BYTES ? "" : new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+          }
+          files.push({ path: vscode.workspace.asRelativePath(uri, false), uri: uri.toString(), languageId: open?.languageId ?? languageIdForPath(uri.path) ?? "plaintext", text });
+        } catch {
+          // Unreadable files are left out of the map.
+        }
+      }),
+    );
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    const graph = buildProjectGraph(files, found.length > MAX_PROJECT_FILES);
+    projectCache.set(key, { at: Date.now(), graph });
+    return graph;
+  }
+
+  async function projectMapFor(
+    document: vscode.TextDocument,
+    analysis: SelectionAnalysis,
+    investigation: SymbolInvestigation | undefined,
+  ): Promise<ProjectMapView | undefined> {
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!folder || document.uri.scheme !== "file") {
       return undefined;
     }
-    const key = document.uri.toString();
-    const cached = importerCache.get(key);
-    if (cached && Date.now() - cached.at < IMPORTER_CACHE_MS) {
-      return cached;
+    const graph = await projectGraphFor(folder);
+    const currentPath = vscode.workspace.asRelativePath(document.uri, false);
+    if (!graph.files.some((file) => file.path === currentPath)) {
+      return undefined;
     }
-
-    const base = document.uri.path.slice(document.uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
-    const names = base === "index" || base === "__init__" ? [document.uri.path.split("/").slice(-2, -1)[0] ?? base] : [base];
-    const files = await vscode.workspace.findFiles(glob, EXCLUDE_GLOB, MAX_IMPORTER_SCAN + 1);
-    const importers: ImporterContext[] = [];
-
-    for (const file of files.slice(0, MAX_IMPORTER_SCAN)) {
-      if (file.toString() === key || importers.length >= 25) {
-        continue;
+    const focus = analysis.context.tokens[analysis.focusIndex];
+    const enclosing: string[] = [];
+    let index = enclosingDeclaration(analysis.context.declarations, focus.line);
+    while (index !== -1) {
+      const declaration = analysis.context.declarations[index];
+      if (declaration.line !== focus.line) {
+        enclosing.unshift(`${declaration.kind} ${declaration.name}`);
       }
-      try {
-        const stat = await vscode.workspace.fs.stat(file);
-        if (stat.size > MAX_IMPORTER_FILE_BYTES) {
-          continue;
-        }
-        const open = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === file.toString());
-        const text = open ? open.getText() : new TextDecoder().decode(await vscode.workspace.fs.readFile(file));
-        const languageId = open?.languageId ?? languageIdForPath(file.path) ?? document.languageId;
-        for (const found of findImportsOf(text, languageId, names)) {
-          importers.push({ uri: file.toString(), line: found.line, excerpt: found.excerpt });
-          break;
-        }
-      } catch {
-        // Unreadable file: skip it. The scan limit message covers incompleteness.
-      }
+      index = declaration.parent;
     }
-
-    const entry: ImporterCacheEntry = { at: Date.now(), importers, scanned: Math.min(files.length, MAX_IMPORTER_SCAN), limited: files.length > MAX_IMPORTER_SCAN };
-    importerCache.set(key, entry);
-    return entry;
+    const toPath = (uri: string): string => vscode.workspace.asRelativePath(vscode.Uri.parse(uri), false);
+    return buildMapView({
+      graph,
+      currentPath,
+      projectName: folder.name,
+      enclosing,
+      selectionLabel: analysis.expressionText.length > 40 ? `${analysis.expressionText.slice(0, 39)}…` : analysis.expressionText,
+      definitionPaths: (investigation?.definitions ?? []).map((location) => toPath(location.uri)),
+      referencePaths: (investigation?.references ?? []).map((location) => toPath(location.uri)),
+    });
   }
 
   const explainCommand = async (): Promise<void> => {
@@ -257,7 +274,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
     }),
-    vscode.workspace.onDidSaveTextDocument(() => importerCache.clear()),
+    vscode.workspace.onDidSaveTextDocument(() => projectCache.clear()),
+    vscode.workspace.onDidCreateFiles(() => projectCache.clear()),
+    vscode.workspace.onDidDeleteFiles(() => projectCache.clear()),
     { dispose: () => clearTimeout(followTimer) },
   );
 }
@@ -395,14 +414,32 @@ async function buildAiRequest(
     }
   }
 
-  for (const importer of (provider.importers ?? []).slice(0, 3)) {
+  const related = [
+    ...(provider.projectMap?.usedBy ?? []).map((entry) => ({ uri: entry.uri, line: entry.line, role: "a file that imports this one" })),
+    ...(provider.projectMap?.uses ?? []).map((entry) => ({ uri: entry.uri, line: 0, role: "a project file this one imports" })),
+  ];
+  for (const importer of related.slice(0, 5)) {
     try {
       const other = await vscode.workspace.openTextDocument(vscode.Uri.parse(importer.uri));
       const start = Math.max(0, importer.line - 3);
-      const end = Math.min(other.lineCount, importer.line + 30);
-      files.push({ label: displayPath(other.uri), uri: importer.uri, firstLine: start, lines: other.getText(new vscode.Range(start, 0, end, 0)).split(/\r?\n/), role: "a file that imports this one" });
+      const end = Math.min(other.lineCount, importer.line + 60);
+      files.push({ label: displayPath(other.uri), uri: importer.uri, firstLine: start, lines: other.getText(new vscode.Range(start, 0, end, 0)).split(/\r?\n/), role: importer.role });
     } catch {
       // Skip files that cannot be opened.
+    }
+  }
+
+  const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+  if (folder) {
+    for (const name of ["README.md", "readme.md", "README.rst", "README.txt", "README"]) {
+      try {
+        const readme = vscode.Uri.joinPath(folder.uri, name);
+        const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(readme));
+        files.push({ label: name, uri: readme.toString(), firstLine: 0, lines: text.split(/\r?\n/).slice(0, 80), role: "the project's README" });
+        break;
+      } catch {
+        // No README with this name.
+      }
     }
   }
 
@@ -415,7 +452,9 @@ async function buildAiRequest(
     verifiedFacts: [...explanation.meaning, ...explanation.fits]
       .filter((claim) => claim.basis === "source" || claim.basis === "provider")
       .slice(0, 8)
-      .map((claim) => richToPlain(claim.text)),
+      .map((claim) => richToPlain(claim.text))
+      .concat(provider.projectMap ? describeMapForAi(provider.projectMap) : []),
+    projectFiles: provider.projectMap?.files.map((file) => file.path),
   };
 }
 

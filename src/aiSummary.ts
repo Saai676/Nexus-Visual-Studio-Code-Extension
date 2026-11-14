@@ -108,7 +108,7 @@ export class AiSummarizer {
     if (!apiKey) {
       throw new UnavailableError("No Gemini API key is stored. Run “Nexus: Set Gemini API Key” first.");
     }
-    const model = vscode.workspace.getConfiguration("nexus").get<string>("ai.geminiModel", "gemini-2.5-flash");
+    const model = vscode.workspace.getConfiguration("nexus").get<string>("ai.geminiModel", "gemini-3-flash-preview");
     const controller = new AbortController();
     const cancel = token.onCancellationRequested(() => controller.abort());
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);

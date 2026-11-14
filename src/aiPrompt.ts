@@ -22,6 +22,8 @@ export interface AiRequest {
   readonly files: readonly AiContextFile[];
   /** The deterministic facts Nexus already established, as plain sentences. */
   readonly verifiedFacts: readonly string[];
+  /** Workspace-relative paths of the project's source files (names only, no contents). */
+  readonly projectFiles?: readonly string[];
 }
 
 export interface AiCitation {
@@ -42,6 +44,11 @@ export type AiResult =
       readonly model: string;
       readonly summary: string;
       readonly role?: string;
+      /** Step-by-step: how the selection fits into the flow of the project. */
+      readonly flow: readonly AiPoint[];
+      readonly inputs?: string;
+      readonly outputs?: string;
+      readonly dependsOnIt?: string;
       readonly points: readonly AiPoint[];
       readonly droppedCitations: number;
       readonly filesSent: readonly string[];
@@ -49,7 +56,7 @@ export type AiResult =
   | { readonly status: "disabled" | "declined" | "unavailable" | "failed"; readonly message: string };
 
 const MAX_LINES_PER_FILE = 260;
-const MAX_TOTAL_CHARACTERS = 48_000;
+const MAX_TOTAL_CHARACTERS = 70_000;
 
 export const SYSTEM_PROMPT = `You explain code to a beginner programmer inside the Nexus VS Code extension.
 
@@ -60,11 +67,17 @@ Rules you must follow:
 4. Write short, plain sentences. Explain any technical term the first time you use it.
 5. Every point about this project must cite the file label and line number it relies on, exactly as numbered below.
 
+6. Be thorough but simple: a beginner should finish reading and understand exactly where this piece sits in the whole program and why it is there.
+
 Reply with JSON only, no markdown fences, in this shape:
-{"summary": "2-3 sentences: what the selected code does in the context of this project",
- "role": "1 sentence: what part it plays in the larger program, or null if the files do not show it",
- "points": [{"text": "one short fact or step", "cite": [{"file": "main.py", "line": 12}]}]}
-Give at most 5 points.`;
+{"summary": "4-6 short sentences: what the selected code is, what it does here, and how it fits into the rest of this project",
+ "role": "1-2 sentences: the job this piece does for the whole program, or null if the files do not show it",
+ "flow": [{"text": "one step in the bigger picture, in order, e.g. 'main.py starts the app and calls load_data()'", "cite": [{"file": "main.py", "line": 12}]}],
+ "inputs": "what this piece receives or depends on (values, other files, libraries), or null",
+ "outputs": "what this piece produces or changes for the rest of the program, or null",
+ "dependsOnIt": "which other parts of the project rely on this piece, and what would be affected if it changed, or null",
+ "points": [{"text": "one extra useful detail", "cite": [{"file": "main.py", "line": 12}]}]}
+"flow" should have 3-7 steps that walk from the wider program down to the selection and onwards, so it can be drawn as a flowchart. Put the step about the selection itself in the flow too. Give at most 4 points.`;
 
 interface SentLine {
   readonly uri: string;
@@ -105,6 +118,9 @@ export function buildPrompt(request: AiRequest): {
     }
   }
 
+  const tree = request.projectFiles && request.projectFiles.length > 0
+    ? `\nAll source files in the project (names only):\n${request.projectFiles.slice(0, 200).map((path) => `- ${path}`).join("\n")}${request.projectFiles.length > 200 ? "\n- …" : ""}\n`
+    : "";
   const facts = request.verifiedFacts.length > 0 ? request.verifiedFacts.map((fact) => `- ${fact}`).join("\n") : "- (none)";
   const prompt = `Language: ${request.languageLabel}
 The user selected this code in ${request.selectionLabel}, line ${request.selectionLine + 1}:
@@ -112,7 +128,7 @@ ${request.selectedCode}
 
 Facts Nexus already verified from the source (do not contradict them):
 ${facts}
-
+${tree}
 ${sections.join("\n\n")}
 
 Explain what the selected code does in the context of these files.`;
@@ -138,8 +154,9 @@ export function parseAnswer(
   }
 
   let dropped = 0;
+  const readPoints = (value: unknown, max: number): AiPoint[] => {
   const points: AiPoint[] = [];
-  const rawPoints = Array.isArray(record.points) ? record.points.slice(0, 5) : [];
+  const rawPoints = Array.isArray(value) ? value.slice(0, max) : [];
 
   for (const raw of rawPoints) {
     if (!raw || typeof raw !== "object") {
@@ -165,9 +182,27 @@ export function parseAnswer(
     }
     points.push({ text: pointText.slice(0, 400), citations });
   }
+  return points;
+  };
+  const points = readPoints(record.points, 4);
+  const flow = readPoints(record.flow, 7);
+  const optionalText = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim() && value.trim().toLowerCase() !== "null" ? value.trim().slice(0, 500) : undefined;
 
-  const role = typeof record.role === "string" && record.role.trim() ? record.role.trim().slice(0, 300) : undefined;
-  return { status: "ok", model, summary: summary.slice(0, 700), role, points, droppedCitations: dropped, filesSent: [...filesSent] };
+  const role = typeof record.role === "string" && record.role.trim() ? record.role.trim().slice(0, 500) : undefined;
+  return {
+    status: "ok",
+    model,
+    summary: summary.slice(0, 1200),
+    role,
+    flow,
+    inputs: optionalText(record.inputs),
+    outputs: optionalText(record.outputs),
+    dependsOnIt: optionalText(record.dependsOnIt),
+    points,
+    droppedCitations: dropped,
+    filesSent: [...filesSent],
+  };
 }
 
 function extractJson(text: string): unknown {

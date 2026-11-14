@@ -7,6 +7,7 @@
  * reader can click to check it.
  */
 import type { SourceRange } from "../investigationModel";
+import type { ProjectMapView } from "./projectMap";
 
 /**
  * source:     read directly in the file, with an exact location.
@@ -158,6 +159,8 @@ export interface Explanation {
   readonly glossary: readonly GlossaryEntry[];
   readonly limits: readonly string[];
   readonly providerStatus: readonly ProviderStatusLine[];
+  /** Where the selection sits in the whole project, when the workspace could be scanned. */
+  readonly projectMap?: ProjectMapView;
 }
 
 export const c = (code: string): CodeSpan => ({ code });

@@ -189,7 +189,85 @@ test("panel HTML escapes source text and renders every section", () => {
   const result = explain(source, "python", "markdown");
   const html = renderPanel(result, { nonce: "abc", cspSource: "x", displayPath: "main.py", aiEnabled: false, followCursor: false });
   assert.ok(!html.includes("<script>alert(1)</script>"));
-  for (const heading of ["What this means", "Read it piece by piece", "How it connects", "What Nexus can&#39;t tell you"]) {
+  for (const heading of ["The pieces", "How it connects", "Explain in words", "What Nexus can't tell you"]) {
     assert.ok(html.includes(heading), heading);
+  }
+});
+
+test("every explanation has a short one-line headline", () => {
+  const cases: [string, string, number, RegExp][] = [
+    ["st.title", "python", 0, /^st = short name for streamlit$/],
+    ["columns", "python", 0, /^columns = something inside streamlit$/],
+    ["left", "python", 1, /^left = the first piece of st\.columns\(2\)$/],
+  ];
+  for (const [needle, languageId, nth, expected] of cases) {
+    assert.match(richToPlain(explain(FINANCE, languageId, needle, 0, nth).headline), expected);
+  }
+});
+
+test("expressions get a left-to-right step strip", () => {
+  const result = explain(FINANCE, "python", "st.title");
+  assert.deepEqual(
+    result.steps.map((step) => `${step.verb}: ${step.code}`),
+    ["start with: st", "look inside for: title", 'run it with: "Financial Data Extraction Tool"'],
+  );
+});
+
+test("if statements render as a YES/NO flowchart and loops as a repeat cycle", () => {
+  const source = `def check(n, items):\n    if n > 0:\n        print("yes")\n    else:\n        print("no")\n    for item in items:\n        print(item)\n`;
+  const decision = explain(source, "python", "if");
+  assert.equal(decision.flow?.shape, "decision");
+  const html = renderPanel(decision, { nonce: "n", cspSource: "x", displayPath: "a.py", aiEnabled: false, followCursor: false });
+  assert.ok(html.includes("fc-diamond") && html.includes("✔ YES") && html.includes("✘ NO"));
+  const loop = explain(source, "python", "for item");
+  assert.equal(loop.flow?.shape, "loop");
+  assert.ok(renderPanel(loop, { nonce: "n", cspSource: "x", displayPath: "a.py", aiEnabled: false, followCursor: false }).includes("fc-back"));
+});
+
+test("project map: resolves imports between project files and finds who uses the current file", async () => {
+  const { buildProjectGraph, buildMapView } = await import("../analysis/projectMap");
+  const files = [
+    { path: "main.py", uri: "file:///p/main.py", languageId: "python", text: "from app.utils import parse\nimport app.report as rep\nimport streamlit as st\n" },
+    { path: "app/utils.py", uri: "file:///p/app/utils.py", languageId: "python", text: "from .report import build\n\ndef parse(x):\n    return build(x)\n" },
+    { path: "app/report.py", uri: "file:///p/app/report.py", languageId: "python", text: "def build(x):\n    return x\n" },
+    { path: "web/index.ts", uri: "file:///p/web/index.ts", languageId: "typescript", text: "import { api } from './api';\nimport React from 'react';\n" },
+    { path: "web/api.ts", uri: "file:///p/web/api.ts", languageId: "typescript", text: "export const api = 1;\n" },
+  ];
+  const graph = buildProjectGraph(files, false);
+  const edges = graph.edges.map((edge) => `${edge.from}->${edge.to}`).sort();
+  assert.deepEqual(edges, ["app/utils.py->app/report.py", "main.py->app/report.py", "main.py->app/utils.py", "web/index.ts->web/api.ts"]);
+
+  const view = buildMapView({ graph, currentPath: "app/utils.py", projectName: "p", enclosing: ["function parse"], selectionLabel: "build(x)", definitionPaths: ["app/report.py"], referencePaths: [] });
+  assert.deepEqual(view.usedBy.map((entry) => entry.path), ["main.py"]);
+  assert.deepEqual(view.uses.map((entry) => entry.path), ["app/report.py"]);
+  assert.deepEqual(view.zoom.map((step) => step.label), ["p", "app", "utils.py", "function parse", "build(x)"]);
+  assert.equal(view.files.find((file) => file.path === "app/report.py")?.role, "definition");
+});
+
+test("AI answers: thorough fields (flow steps, inputs, outputs, dependents) are parsed and checked", () => {
+  const { sentLines, filesSent } = buildPrompt({
+    languageLabel: "Python",
+    selectedCode: "st",
+    selectionLabel: "main.py",
+    selectionLine: 0,
+    files: [{ label: "main.py", uri: "file:///main.py", firstLine: 0, lines: FINANCE.split("\n"), role: "the open file" }],
+    verifiedFacts: [],
+    projectFiles: ["main.py", "app/utils.py"],
+  });
+  const answer = JSON.stringify({
+    summary: "st is the Streamlit module under a short name. It is used to draw every part of the page.",
+    role: "It builds the whole user interface.",
+    flow: [{ text: "Line 1 loads Streamlit as st", cite: [{ file: "main.py", line: 1 }] }, { text: "Line 3 draws the title", cite: [{ file: "main.py", line: 3 }] }],
+    inputs: "The streamlit library",
+    outputs: "The page the user sees",
+    dependsOnIt: "Every UI line in main.py",
+    points: [],
+  });
+  const result = parseAnswer(answer, "m", sentLines, filesSent);
+  assert.equal(result.status, "ok");
+  if (result.status === "ok") {
+    assert.equal(result.flow.length, 2);
+    assert.equal(result.flow[1].citations[0].line, 2);
+    assert.equal(result.outputs, "The page the user sees");
   }
 });

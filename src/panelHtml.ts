@@ -5,13 +5,16 @@
  * and previewed outside the editor. All text is escaped; the only
  * script is the small, nonce-protected navigation/AI handler.
  */
-import type { AiResult } from "./aiPrompt";
+import type { AiPoint, AiResult } from "./aiPrompt";
+import type { MapFile, ProjectMapView } from "./analysis/projectMap";
 import type {
   Basis,
   BreakdownPart,
   Claim,
   Evidence,
   Explanation,
+  Flow,
+  FlowRow,
   MapNode,
   Rich,
 } from "./analysis/explanationModel";
@@ -121,7 +124,7 @@ function breakdown(parts: readonly BreakdownPart[], truncated: boolean): string 
     .map(({ part, index }) => `<li data-legend-item="${index}"><span class="legend-swatch swatch-${part.role}"></span><span>${rich(part.detail!)}</span></li>`)
     .join("");
 
-  return `<div class="chips" role="list">${chips}</div>${truncated ? `<p class="muted small">Long expression: only the first part is broken down.</p>` : ""}<ul class="legend">${legend}</ul>`;
+  return `<div class="chips" role="list">${chips}</div>${truncated ? `<p class="muted small">Long expression: only the first part is broken down.</p>` : ""}${legend ? `<details class="legend-box"><summary>What each piece means</summary><ul class="legend">${legend}</ul></details>` : ""}`;
 }
 
 function mapColumn(nodes: readonly MapNode[], column: MapNode["column"], title: string): string {
@@ -148,7 +151,7 @@ function conceptMap(nodes: readonly MapNode[]): string {
 
 export function renderAiResult(result: AiResult | undefined, enabled: boolean): string {
   if (!enabled) {
-    return `<p class="muted">Want a plain-English summary of what this does in your project? Turn on <button type="button" class="link" data-command="enableAi">AI summaries</button>. The AI only sees files from this workspace, never the web.</p>`;
+    return `<p class="muted">Want a thorough, plain-English explanation of how this fits into your whole project? Turn on <button type="button" class="link" data-command="enableAi">AI summaries</button>. The AI only sees files from this workspace, never the web.</p>`;
   }
   if (!result) {
     return `<div class="ai-loading"><span class="spinner" aria-hidden="true"></span>Reading the related files in this project…</div>`;
@@ -157,20 +160,102 @@ export function renderAiResult(result: AiResult | undefined, enabled: boolean): 
     return `<p class="muted">${escapeHtml(result.message)}</p>`;
   }
 
-  const points = result.points
-    .map((point) => {
-      const cites = point.citations
-        .map((cite, index) => `<button type="button" class="jump" data-ai-cite="${escapeHtml(cite.uri)}|${cite.line}" title="${escapeHtml(cite.excerpt)}">${escapeHtml(cite.label)}:${cite.line + 1}</button>${index < point.citations.length - 1 ? "" : ""}`)
-        .join("");
-      return `<li>${escapeHtml(point.text)}${cites ? `<span class="jumps">${cites}</span>` : `<span class="muted small"> (no line cited)</span>`}</li>`;
-    })
-    .join("");
+  const cites = (point: AiPoint): string =>
+    point.citations.length > 0
+      ? `<span class="jumps">${point.citations.map((cite) => `<button type="button" class="jump" data-ai-cite="${escapeHtml(cite.uri)}|${cite.line}" title="${escapeHtml(cite.excerpt)}">${escapeHtml(cite.label.trim())}:${cite.line + 1}</button>`).join("")}</span>`
+      : `<span class="muted small">(no line cited)</span>`;
+
+  const flow = result.flow.length > 0
+    ? `<h3>How it fits, step by step</h3><div class="ai-flow">${result.flow
+        .map((step, index) => `${index > 0 ? `<div class="fc-down" aria-hidden="true">↓</div>` : ""}<div class="ai-step"><span class="ai-step-num">${index + 1}</span><div class="ai-step-body"><span>${escapeHtml(step.text)}</span>${cites(step)}</div></div>`)
+        .join("")}</div>`
+    : "";
+
+  const io = [
+    result.inputs ? `<div class="ai-io ai-in"><span class="whatif-kicker">⬅ goes in</span><span>${escapeHtml(result.inputs)}</span></div>` : "",
+    result.outputs ? `<div class="ai-io ai-out"><span class="whatif-kicker">comes out ➡</span><span>${escapeHtml(result.outputs)}</span></div>` : "",
+    result.dependsOnIt ? `<div class="ai-io ai-dep"><span class="whatif-kicker">⚠ relies on it</span><span>${escapeHtml(result.dependsOnIt)}</span></div>` : "",
+  ].join("");
+
+  const points = result.points.length > 0
+    ? `<h3>Good to know</h3><ul class="ai-points">${result.points.map((point) => `<li>${escapeHtml(point.text)} ${cites(point)}</li>`).join("")}</ul>`
+    : "";
 
   return `<p class="ai-summary">${escapeHtml(result.summary)}</p>
-${result.role ? `<p class="ai-role"><strong>Its role in the project:</strong> ${escapeHtml(result.role)}</p>` : ""}
-${points ? `<ul class="ai-points">${points}</ul>` : ""}
-<p class="muted small">Written by ${escapeHtml(result.model)} using only: ${escapeHtml(result.filesSent.join(", "))}. AI can be wrong. Check the cited lines.${result.droppedCitations > 0 ? ` ${result.droppedCitations} citation${result.droppedCitations === 1 ? " was" : "s were"} removed because ${result.droppedCitations === 1 ? "it did" : "they did"} not match the code that was sent.` : ""}</p>`;
+${result.role ? `<div class="ai-role"><span class="whatif-kicker">its job in the project</span><span>${escapeHtml(result.role)}</span></div>` : ""}
+${io ? `<div class="ai-ios">${io}</div>` : ""}
+${flow}
+${points}
+<p class="muted small">Written by ${escapeHtml(result.model)} using only files from this workspace (${escapeHtml(result.filesSent.map((file) => file.trim()).filter((file, index, all) => all.indexOf(file) === index).join(", "))}). AI can be wrong. Check the cited lines.${result.droppedCitations > 0 ? ` ${result.droppedCitations} citation${result.droppedCitations === 1 ? " was" : "s were"} removed because ${result.droppedCitations === 1 ? "it did" : "they did"} not match the code that was sent.` : ""}</p>`;
 }
+
+/** "Where this fits in the project": zoom path, connection diagram, and whole-project file map. */
+function projectSection(view: ProjectMapView): string {
+  const zoom = view.zoom
+    .map((step, index) => `${index > 0 ? `<span class="zoom-arrow" aria-hidden="true">›</span>` : ""}<span class="zoom zoom-${step.kind}"><span class="zoom-kind">${escapeHtml(ZOOM_LABEL[step.kind] ?? step.kind)}</span><span class="zoom-label">${step.kind === "selection" || step.kind === "declaration" ? `<code>${escapeHtml(step.label)}</code>` : escapeHtml(step.label)}</span></span>`)
+    .join("");
+
+  const fileButton = (path: string, uri: string, extra = ""): string =>
+    `<button type="button" class="pfile" data-open-uri="${escapeHtml(uri)}" title="${escapeHtml(path)}">${escapeHtml(path.split("/").pop() ?? path)}${extra}</button>`;
+  const column = (title: string, items: string[], empty: string): string =>
+    `<div class="pcol"><div class="map-col-title">${escapeHtml(title)}</div>${items.length > 0 ? items.join("") : `<div class="pempty">${escapeHtml(empty)}</div>`}</div>`;
+
+  const usedBy = view.usedBy.slice(0, 8).map((entry) => fileButton(entry.path, entry.uri, `<span class="pline">line ${entry.line + 1}</span>`));
+  const uses = view.uses.slice(0, 8).map((entry) => fileButton(entry.path, entry.uri, entry.names.length > 0 ? `<span class="pline">${escapeHtml(entry.names.slice(0, 3).join(", "))}</span>` : ""));
+  const center = `<div class="pcenter"><div class="map-col-title">This file</div><div class="pcurrent"><span class="pcurrent-file">${escapeHtml(view.currentPath.split("/").pop() ?? view.currentPath)}</span>${view.zoom
+    .filter((step) => step.kind === "declaration" || step.kind === "selection")
+    .map((step, index) => `<span class="pnest" style="margin-left:${index * 10}px">${step.kind === "selection" ? "★ " : "▸ "}<code>${escapeHtml(step.label)}</code></span>`)
+    .join("")}</div></div>`;
+  const connections = `<div class="pconn">${column("Used by", usedBy, "No project file imports this one")}<div class="map-arrow" aria-hidden="true">→</div>${center}<div class="map-arrow" aria-hidden="true">→</div>${column("Uses", uses, "Uses no other project file")}</div>`;
+
+  // Whole-project map grouped by folder.
+  const groups = new Map<string, MapFile[]>();
+  for (const file of view.files) {
+    const folder = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "(top level)";
+    const list = groups.get(folder) ?? [];
+    list.push(file);
+    groups.set(folder, list);
+  }
+  const important = (file: MapFile): boolean => file.role !== "other";
+  const folders = [...groups.entries()]
+    .sort((a, b) => Number(b[1].some(important)) - Number(a[1].some(important)) || a[0].localeCompare(b[0]))
+    .slice(0, 24)
+    .map(([folder, files]) => {
+      const sorted = [...files].sort((a, b) => Number(important(b)) - Number(important(a)) || a.path.localeCompare(b.path));
+      const shown = sorted.slice(0, 18);
+      return `<div class="pfolder"><div class="pfolder-name">📁 ${escapeHtml(folder)}</div><div class="pfolder-files">${shown
+        .map((file) => `<button type="button" class="pdot pdot-${file.role}" data-open-uri="${escapeHtml(file.uri)}" title="${escapeHtml(file.path)}: ${escapeHtml(ROLE_LABEL[file.role])}">${escapeHtml(file.path.split("/").pop() ?? file.path)}</button>`)
+        .join("")}${files.length > shown.length ? `<span class="muted small">+${files.length - shown.length} more</span>` : ""}</div></div>`;
+    })
+    .join("");
+  const legend = (["current", "definition", "used-by", "uses", "reference"] as const)
+    .map((role) => `<span class="plegend"><span class="pswatch pdot-${role}"></span>${escapeHtml(ROLE_LABEL[role])}</span>`)
+    .join("");
+
+  return `<div class="zoomrow">${zoom}</div>
+<h3>Connections</h3>${connections}
+<h3>The whole project <span class="muted small">(${view.totalFiles} source files${view.limited ? ", first ones shown" : ""})</span></h3>
+<div class="pmap">${folders}</div>
+<div class="plegends">${legend}</div>
+<p class="muted small">${tag("source")} Connections come from import statements that point to a file in this project. Click any file to open it.</p>`;
+}
+
+const ZOOM_LABEL: Readonly<Record<string, string>> = {
+  project: "project",
+  folder: "folder",
+  file: "file",
+  declaration: "inside",
+  selection: "you are here",
+};
+
+const ROLE_LABEL: Readonly<Record<MapFile["role"], string>> = {
+  current: "this file",
+  definition: "where it's defined",
+  "used-by": "imports this file",
+  uses: "imported by this file",
+  reference: "also uses it (language server)",
+  other: "other project file",
+};
 
 export function renderPanel(explanation: Explanation, options: PanelRenderOptions): string {
   const evidence = new Map(explanation.evidence.map((entry) => [entry.id, entry]));
@@ -197,6 +282,7 @@ ${body}
 function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evidence>, options: PanelRenderOptions): string {
   const parts: string[] = [];
 
+  // 1. The one-line answer, big.
   parts.push(`<header class="hero">
   <div class="hero-top">
     <span class="pill">${escapeHtml(explanation.kindLabel)}</span>
@@ -204,74 +290,152 @@ function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evid
     <span class="spacer"></span>
     <button type="button" class="toggle${options.followCursor ? " on" : ""}" data-command="toggleFollow" title="Update this panel automatically as you move the cursor">${options.followCursor ? "● Following cursor" : "○ Follow cursor"}</button>
   </div>
-  <h1><code>${escapeHtml(explanation.heading)}</code></h1>
-  <p class="muted small">${escapeHtml(options.displayPath)} · line ${explanation.range.start.line + 1}</p>
+  <p class="headline">${rich(explanation.headline)}</p>
+  <p class="muted small where"><code>${escapeHtml(explanation.heading)}</code> · ${escapeHtml(options.displayPath)} line ${explanation.range.start.line + 1}</p>
 </header>`);
 
-  parts.push(section("meaning", "💡", "What this means", claims(explanation.meaning, evidence, "claims claims-lead"), "card-lead"));
+  // 1b. AI summary (optional): the thorough plain-English explanation.
+  parts.push(section("ai", "✨", "How this fits into your project", `<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
 
-  parts.push(section("ai", "✨", "AI summary: what it does in this project", `<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
-
-  if (explanation.breakdown.length > 0) {
-    parts.push(section("syntax", "🧩", "Read it piece by piece", breakdown(explanation.breakdown, explanation.breakdownTruncated)));
+  // 2. Read it left to right.
+  if (explanation.steps.length > 1) {
+    const boxes = explanation.steps
+      .map((step, index) => `${index > 0 ? `<span class="step-arrow" aria-hidden="true">→</span>` : ""}<div class="step"><span class="step-num">${index + 1}</span><span class="step-verb">${escapeHtml(step.verb)}</span><code class="step-code">${escapeHtml(step.code)}</code></div>`)
+      .join("");
+    parts.push(section("steps", "➡️", "Read it left to right", `<div class="steps">${boxes}</div>`));
   }
 
+  // 3. The pieces.
+  if (explanation.breakdown.length > 0) {
+    parts.push(section("syntax", "🧩", "The pieces", breakdown(explanation.breakdown, explanation.breakdownTruncated)));
+  }
+
+  // 4. Connections.
   if (explanation.map.nodes.length > 0) {
     parts.push(section("map", "🗺️", "How it connects", conceptMap(explanation.map.nodes)));
   }
 
+  // 4b. The whole project.
+  if (explanation.projectMap && explanation.projectMap.totalFiles > 1) {
+    parts.push(section("project-map", "🧭", "Where this fits in the project", projectSection(explanation.projectMap)));
+  }
+
+  // 5. Flowchart.
   if (explanation.flow) {
-    const rows = explanation.flow.rows
-      .map((row) => `<div class="flow-row flow-${row.tone}"><span class="flow-tag">${escapeHtml(row.tag)}</span><span class="flow-text">${rich(row.text)}</span></div>`)
-      .join("");
-    parts.push(section("flow", "🔀", explanation.flow.title, `<div class="flow">${rows}</div><p class="muted small">${tag("language")} This is how the language works in general, not proof that this code runs.</p>`));
+    parts.push(section("flow", "🔀", explanation.flow.title, `${flowchart(explanation.flow)}<p class="muted small">${tag("language")} How the language works in general, not proof this code runs.</p>`));
   }
 
-  if (explanation.fits.length > 0) {
-    parts.push(section("fits", "📄", "How it fits into this file", claims(explanation.fits, evidence)));
-  }
-
+  // 6. Change → effect.
   if (explanation.whatIf.length > 0) {
     const cards = explanation.whatIf
-      .map((entry) => `<div class="whatif">${tag(entry.basis)}<div class="whatif-change">${rich(entry.change)}…</div><div class="whatif-effect">→ ${rich(entry.effect)}</div>${evidenceLinks(entry.evidenceIds, evidence)}</div>`)
+      .map((entry) => `<div class="whatif"><div class="whatif-box whatif-change"><span class="whatif-kicker">change</span><span>${rich(stripIf(entry.change))}</span></div><div class="whatif-arrow" aria-hidden="true">→</div><div class="whatif-box whatif-effect"><span class="whatif-kicker">effect</span><span>${rich(capitalizeRich(entry.effect))}</span><div class="whatif-foot">${tag(entry.basis)}${evidenceLinks(entry.evidenceIds, evidence)}</div></div></div>`)
       .join("");
-    parts.push(section("whatif", "🔧", "If you change this…", `<div class="whatifs">${cards}</div>`));
+    parts.push(section("whatif", "🔧", "If you change this", `<div class="whatifs">${cards}</div>`));
   }
 
+
+  // 8. Words, folded away.
+  const words: string[] = [];
+  words.push(`<h3>What it means</h3>${claims(explanation.meaning, evidence)}`);
+  if (explanation.fits.length > 0) {
+    words.push(`<h3>In this file</h3>${claims(explanation.fits, evidence)}`);
+  }
   if (explanation.project.length > 0) {
-    parts.push(section("project", "🧭", "In the rest of the project", claims(explanation.project, evidence)));
+    words.push(`<h3>In the rest of the project</h3>${claims(explanation.project, evidence)}`);
   }
-
   if (explanation.documentation.length > 0) {
-    const docs = explanation.documentation
-      .map((entry) => `<details><summary>Documentation for <code>${escapeHtml(entry.subject)}</code> ${tag("provider")}</summary><pre class="doc">${escapeHtml(entry.text)}${entry.truncated ? "\n…" : ""}</pre></details>`)
-      .join("");
-    parts.push(section("docs", "📘", "Documentation from the language server", docs));
+    words.push(`<h3>Documentation ${tag("provider")}</h3>${explanation.documentation.map((entry) => `<p class="small"><code>${escapeHtml(entry.subject)}</code></p><pre class="doc">${escapeHtml(entry.text)}${entry.truncated ? "\n…" : ""}</pre>`).join("")}`);
   }
+  const projectHint = explanation.project.length > 0 ? ` · ${explanation.project.length} from other files` : "";
+  parts.push(`<section class="card card-quiet"><details class="words"><summary><span class="icon" aria-hidden="true">📖</span>Explain in words <span class="muted small">(${explanation.meaning.length + explanation.fits.length + explanation.project.length} notes${projectHint})</span></summary>${words.join("")}</details>${
+    explanation.unknowns.length > 0
+      ? `<details class="unknown-box"><summary><span class="icon" aria-hidden="true">❓</span>What Nexus can't tell you <span class="muted small">(${explanation.unknowns.length})</span></summary><ul class="unknowns">${explanation.unknowns.map((entry) => `<li>${rich(entry)}</li>`).join("")}</ul></details>`
+      : ""
+  }${moreDetails(explanation)}</section>`);
 
-  if (explanation.unknowns.length > 0) {
-    parts.push(section("unknowns", "❓", "What Nexus can't tell you", `<ul class="unknowns">${explanation.unknowns.map((entry) => `<li>${rich(entry)}</li>`).join("")}</ul>`, "card-unknown"));
+  return parts.join("\n");
+}
+
+const IMPERATIVE: Readonly<Record<string, string>> = {
+  renamed: "Rename",
+  changed: "Change",
+  deleted: "Delete",
+  swapped: "Swap",
+  added: "Add",
+};
+
+/** "If you renamed x" → "Rename x"; other "If …" phrases are kept as written. */
+function stripIf(text: Rich): Rich {
+  const [first, ...rest] = text;
+  if (typeof first !== "string") {
+    return text;
   }
+  const match = /^If you (\w+)(.*)$/s.exec(first);
+  if (!match) {
+    return text;
+  }
+  const verb = IMPERATIVE[match[1]] ?? match[1].charAt(0).toUpperCase() + match[1].slice(1);
+  return [`${verb}${match[2].replace(/^ or removed/, " or remove")}`, ...rest];
+}
 
-  const glossary = explanation.glossary.length > 0
-    ? `<details><summary>Words used here (${explanation.glossary.length})</summary><dl class="glossary">${explanation.glossary.map((entry) => `<dt>${escapeHtml(entry.term)}</dt><dd>${escapeHtml(entry.plain)}</dd>`).join("")}</dl></details>`
-    : "";
+function capitalizeRich(text: Rich): Rich {
+  const [first, ...rest] = text;
+  return typeof first === "string" ? [first.charAt(0).toUpperCase() + first.slice(1), ...rest] : text;
+}
+
+function moreDetails(explanation: Explanation): string {
   const evidenceList = explanation.evidence.length > 0
-    ? `<details><summary>All evidence (${explanation.evidence.length})</summary><ul class="evidence">${explanation.evidence
+    ? `<details><summary><span class="icon" aria-hidden="true">🔎</span>All evidence <span class="muted small">(${explanation.evidence.length})</span></summary><ul class="evidence">${explanation.evidence
         .map((entry) => `<li><button type="button" class="evidence-row" data-evidence-id="${escapeHtml(entry.id)}">${tag(entry.basis)}<span class="evidence-label">${escapeHtml(entry.label)}</span><span class="evidence-loc">${escapeHtml(lineLabel(entry))}</span>${entry.excerpt ? `<code class="evidence-excerpt">${escapeHtml(entry.excerpt)}</code>` : ""}</button></li>`)
         .join("")}</ul></details>`
     : "";
+  const glossary = explanation.glossary.length > 0
+    ? `<details><summary><span class="icon" aria-hidden="true">🔤</span>Words used here <span class="muted small">(${explanation.glossary.length})</span></summary><dl class="glossary">${explanation.glossary.map((entry) => `<dt>${escapeHtml(entry.term)}</dt><dd>${escapeHtml(entry.plain)}</dd>`).join("")}</dl></details>`
+    : "";
+  const limits = explanation.limits.length > 0
+    ? `<details${explanation.supportLevel === "generic" ? " open" : ""}><summary><span class="icon" aria-hidden="true">⚠️</span>Limits <span class="muted small">(${explanation.limits.length})</span></summary><ul class="plain">${explanation.limits.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")}</ul></details>`
+    : "";
   const status = explanation.providerStatus.length > 0
-    ? `<details><summary>Language server status</summary><ul class="plain">${explanation.providerStatus
+    ? `<details><summary><span class="icon" aria-hidden="true">🛠️</span>Language server status</summary><ul class="plain">${explanation.providerStatus
         .map((line) => `<li><strong>${escapeHtml(line.label)}:</strong> ${escapeHtml(line.status)} (${line.count})${line.message ? ` · <span class="muted">${escapeHtml(line.message)}</span>` : ""}</li>`)
         .join("")}</ul></details>`
     : "";
-  const limits = [...explanation.limits];
-  const limitsHtml = limits.length > 0 ? `<details${explanation.supportLevel === "generic" ? " open" : ""}><summary>Limits of this explanation (${limits.length})</summary><ul class="plain">${limits.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")}</ul></details>` : "";
+  return evidenceList + glossary + limits + status;
+}
 
-  parts.push(`<section class="card card-quiet" id="more"><h2><span class="icon" aria-hidden="true">🔎</span>Check the evidence</h2>${evidenceList}${glossary}${limitsHtml}${status}</section>`);
+/** Draws the flow as a small diagram: a decision with YES/NO branches, a loop, or a list of steps. */
+function flowchart(flow: Flow): string {
+  const rowsByTone = (tone: FlowRow["tone"]): FlowRow[] => flow.rows.filter((row) => row.tone === tone);
+  const box = (row: FlowRow, cls: string): string => `<div class="fc-box ${cls}"><span class="fc-tag">${escapeHtml(row.tag)}</span><span class="fc-text">${rich(row.text)}</span></div>`;
+  const notes = rowsByTone("note").map((row) => `<div class="fc-note">💡 ${rich(row.text)}</div>`).join("");
+  const condition = rowsByTone("if")[0];
+  const yes = rowsByTone("then")[0];
+  const no = rowsByTone("else")[0];
 
-  return parts.join("\n");
+  if (flow.shape === "decision" && condition && (yes || no)) {
+    return `<div class="fc fc-decision">
+  <div class="fc-diamond"><span class="fc-tag">${escapeHtml(condition.tag)}</span><span class="fc-text">${rich(condition.text)}</span></div>
+  <div class="fc-split" aria-hidden="true"><span class="fc-line-left"></span><span class="fc-line-right"></span></div>
+  <div class="fc-branches">
+    <div class="fc-branch"><span class="fc-branch-label fc-yes">✔ YES</span>${yes ? box(yes, "fc-then") : ""}</div>
+    <div class="fc-branch"><span class="fc-branch-label fc-no">✘ NO</span>${no ? box(no, "fc-else") : ""}</div>
+  </div>
+  ${notes}
+</div>`;
+  }
+
+  if (flow.shape === "loop" && condition && yes) {
+    return `<div class="fc fc-loop">
+  ${box(condition, "fc-if")}
+  <div class="fc-down" aria-hidden="true">↓</div>
+  <div class="fc-cycle">${box(yes, "fc-then")}<div class="fc-back" aria-hidden="true">↺ <span>repeat</span></div></div>
+  ${no ? `<div class="fc-down" aria-hidden="true">↓ when finished</div>${box(no, "fc-else")}` : ""}
+  ${notes}
+</div>`;
+  }
+
+  const steps = flow.rows.filter((row) => row.tone !== "note");
+  return `<div class="fc fc-steps">${steps.map((row, index) => `${index > 0 ? `<div class="fc-down" aria-hidden="true">↓</div>` : ""}${box(row, `fc-${row.tone}`)}`).join("")}${notes}</div>`;
 }
 
 const STYLES = `
@@ -382,17 +546,109 @@ summary{cursor:pointer;font-weight:600;padding:2px 0}
 .evidence-excerpt{grid-column:1/-1;white-space:pre-wrap}
 pre.doc{white-space:pre-wrap;font-family:var(--vscode-editor-font-family);font-size:.9em;background:var(--vscode-textCodeBlock-background,rgba(128,128,128,.12));padding:10px;border-radius:6px;max-height:260px;overflow:auto}
 .empty h1{font-size:1.1em}
+.ai-role{display:flex;flex-direction:column;gap:3px;border-left:3px solid var(--b-ai);padding:4px 10px;margin:4px 0 10px}
+.ai-ios{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:8px 0}
+.ai-io{border-radius:9px;padding:8px 11px;display:flex;flex-direction:column;gap:3px;border:1px solid var(--border);background:var(--bg)}
+.ai-in{border-color:color-mix(in srgb,var(--c-keyword) 45%,transparent)}
+.ai-out{border-color:color-mix(in srgb,var(--b-source) 45%,transparent)}
+.ai-dep{border-color:color-mix(in srgb,var(--b-name-match) 55%,transparent)}
+.ai-flow{display:flex;flex-direction:column;align-items:stretch;gap:2px}
+.ai-flow .fc-down{text-align:center}
+.ai-step{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:9px;padding:8px 11px;background:var(--bg)}
+.ai-step-num{flex:none;width:22px;height:22px;border-radius:50%;background:var(--b-ai);color:#000;font-weight:800;font-size:.78em;display:flex;align-items:center;justify-content:center}
+.ai-step-body{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+.zoomrow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:6px}
+.zoom{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:8px;padding:4px 10px;background:var(--bg)}
+.zoom-kind{font-size:.65em;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700}
+.zoom-label{font-weight:600}
+.zoom-selection{border:2px solid var(--accent)}
+.zoom-file{border-color:color-mix(in srgb,var(--accent) 50%,transparent)}
+.zoom-arrow{color:var(--muted);font-size:1.3em}
+.pconn{display:grid;grid-template-columns:1fr auto minmax(140px,1fr) auto 1fr;gap:8px;align-items:center}
+.pcol{display:flex;flex-direction:column;gap:5px;min-width:0}
+.pfile{font:inherit;text-align:left;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:8px;padding:5px 9px;background:var(--bg);color:var(--fg);cursor:pointer;overflow-wrap:anywhere}
+.pfile:hover{border-color:var(--focus)}
+.pline{font-size:.72em;color:var(--muted)}
+.pempty{font-size:.85em;color:var(--muted);border:1px dashed var(--border);border-radius:8px;padding:8px;text-align:center}
+.pcenter{display:flex;flex-direction:column;gap:5px}
+.pcurrent{border:2px solid var(--accent);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:3px;background:var(--bg)}
+.pcurrent-file{font-weight:700}
+.pnest{font-size:.9em}
+.pmap{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow:auto;padding-right:4px}
+.pfolder{display:grid;grid-template-columns:minmax(90px,170px) 1fr;gap:8px;align-items:start}
+.pfolder-name{font-size:.82em;color:var(--muted);overflow-wrap:anywhere;padding-top:3px}
+.pfolder-files{display:flex;flex-wrap:wrap;gap:4px}
+.pdot{font:inherit;font-size:.78em;font-family:var(--vscode-editor-font-family);border-radius:6px;padding:1px 7px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer}
+.pdot:hover{border-color:var(--focus)}
+.pdot-current{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:700}
+.pdot-definition{background:color-mix(in srgb,var(--b-language) 30%,transparent);color:var(--fg);border-color:var(--b-language)}
+.pdot-used-by{background:color-mix(in srgb,var(--b-source) 28%,transparent);color:var(--fg);border-color:var(--b-source)}
+.pdot-uses{background:color-mix(in srgb,var(--c-keyword) 26%,transparent);color:var(--fg);border-color:var(--c-keyword)}
+.pdot-reference{background:color-mix(in srgb,var(--b-provider) 26%,transparent);color:var(--fg);border-color:var(--b-provider)}
+.plegends{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:.82em;color:var(--muted)}
+.plegend{display:flex;align-items:center;gap:5px}
+.pswatch{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid var(--border)}
+@media (max-width:560px){.pconn{grid-template-columns:1fr}.pfolder{grid-template-columns:1fr}}
+
+.headline{font-size:1.45em;line-height:1.35;font-weight:600;margin:10px 0 4px;overflow-wrap:anywhere}
+.headline code{font-size:.95em;padding:2px 7px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--fg)}
+.where code{background:none;padding:0}
+h3{font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:14px 0 6px}
+.steps{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.step{display:flex;flex-direction:column;align-items:center;gap:4px;border:1px solid var(--border);border-radius:10px;padding:8px 12px;background:var(--bg);position:relative;min-width:84px}
+.step-num{position:absolute;top:-9px;left:-9px;width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--bg);font-size:.72em;font-weight:800;display:flex;align-items:center;justify-content:center}
+.step-verb{font-size:.72em;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+.step-code{font-size:1.05em}
+.step-arrow{font-size:1.4em;color:var(--muted)}
+.legend-box{border-top:1px dashed var(--border);margin-top:4px}
+.legend-box summary{font-weight:500;color:var(--muted);font-size:.9em}
+.fc{display:flex;flex-direction:column;align-items:center;gap:4px}
+.fc-box{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;border-radius:10px;padding:9px 14px;border:2px solid var(--border);background:var(--bg);max-width:460px;width:100%}
+.fc-tag{font-size:.7em;font-weight:800;letter-spacing:.07em}
+.fc-if{border-color:var(--c-keyword)}.fc-if .fc-tag{color:var(--c-keyword)}
+.fc-then{border-color:var(--b-source)}.fc-then .fc-tag{color:var(--b-source)}
+.fc-else{border-color:var(--b-provider)}.fc-else .fc-tag{color:var(--b-provider)}
+.fc-diamond{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;padding:16px 34px;max-width:420px;background:color-mix(in srgb,var(--c-keyword) 16%,var(--bg));clip-path:polygon(12% 0,88% 0,100% 50%,88% 100%,12% 100%,0 50%)}
+.fc-diamond .fc-tag{color:var(--c-keyword)}
+.fc-split{position:relative;width:60%;height:18px}
+.fc-line-left,.fc-line-right{position:absolute;top:0;width:50%;height:100%;border-top:2px solid var(--border)}
+.fc-line-left{left:0;border-left:2px solid var(--border);border-top-left-radius:8px}
+.fc-line-right{right:0;border-right:2px solid var(--border);border-top-right-radius:8px}
+.fc-branches{display:grid;grid-template-columns:1fr 1fr;gap:12px;width:100%}
+.fc-branch{display:flex;flex-direction:column;align-items:center;gap:5px}
+.fc-branch-label{font-size:.75em;font-weight:800;letter-spacing:.06em;padding:1px 9px;border-radius:999px}
+.fc-yes{background:color-mix(in srgb,var(--b-source) 22%,transparent);color:var(--b-source)}
+.fc-no{background:color-mix(in srgb,var(--b-provider) 22%,transparent);color:var(--b-provider)}
+.fc-down{color:var(--muted);font-size:1.1em;line-height:1.2}
+.fc-cycle{display:flex;align-items:center;gap:10px;width:100%;justify-content:center}
+.fc-cycle .fc-box{flex:1}
+.fc-back{font-size:1.5em;color:var(--b-source);display:flex;flex-direction:column;align-items:center;line-height:1}
+.fc-back span{font-size:.45em;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+.fc-note{font-size:.86em;color:var(--muted);margin-top:8px;text-align:center}
+.whatifs{display:flex;flex-direction:column;gap:10px}
+.whatifs .whatif{display:grid;grid-template-columns:1fr auto 1.4fr;align-items:stretch;gap:8px;border:none;padding:0;background:none}
+.whatif-box{border-radius:10px;padding:9px 12px;display:flex;flex-direction:column;gap:4px}
+.whatif-change{background:color-mix(in srgb,var(--c-keyword) 14%,var(--bg));border:1px solid color-mix(in srgb,var(--c-keyword) 45%,transparent);font-weight:600}
+.whatif-effect{background:color-mix(in srgb,var(--b-provider) 12%,var(--bg));border:1px solid color-mix(in srgb,var(--b-provider) 40%,transparent)}
+.whatif-kicker{font-size:.68em;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:800}
+.whatif-arrow{align-self:center;font-size:1.6em;color:var(--muted)}
+.whatif-foot{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:2px}
+@media (max-width:560px){.whatif{grid-template-columns:1fr}.whatif-arrow{transform:rotate(90deg);justify-self:center}.fc-branches{grid-template-columns:1fr}}
+details.words>summary,details.unknown-box>summary,.card-quiet details>summary{display:flex;align-items:center;gap:8px}
+.card-quiet details{border-top:1px solid var(--border)}
+.card-quiet details:first-child{border-top:none}
 `;
 
 const SCRIPT = `
 const vscode = acquireVsCodeApi();
 document.addEventListener("click", (event) => {
-  const target = event.target instanceof Element ? event.target.closest("[data-evidence-id],[data-ai-cite],[data-command],[data-legend]") : null;
+  const target = event.target instanceof Element ? event.target.closest("[data-evidence-id],[data-ai-cite],[data-command],[data-legend],[data-open-uri]") : null;
   if (!target) { return; }
+  if (target.dataset.openUri) { vscode.postMessage({ command: "openFile", uri: target.dataset.openUri }); return; }
   if (target.dataset.evidenceId) { vscode.postMessage({ command: "navigate", evidenceId: target.dataset.evidenceId }); return; }
   if (target.dataset.aiCite) { vscode.postMessage({ command: "navigateAi", cite: target.dataset.aiCite }); return; }
   if (target.dataset.command) { vscode.postMessage({ command: target.dataset.command }); return; }
-  if (target.dataset.legend) { highlight(target.dataset.legend); }
+  if (target.dataset.legend) { const box = document.querySelector(".legend-box"); if (box) { box.open = true; } highlight(target.dataset.legend); }
 });
 document.addEventListener("keydown", (event) => {
   const target = event.target;
