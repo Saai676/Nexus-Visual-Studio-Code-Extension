@@ -65,7 +65,7 @@ test("Scenario D: left inside `with left:` links back to the unpacking assignmen
   const text = plain(result);
   assert.match(text, /left is one of 2 names given a value together on line 5/);
   assert.match(text, /left receives the first piece/);
-  assert.equal(result.flow?.title, "How this with-block works");
+  assert.equal(result.flow?.title, "How the with-block works");
   assert.ok(!/runtime data flow is/.test(text));
 });
 

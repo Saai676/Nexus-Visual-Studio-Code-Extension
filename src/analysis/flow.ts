@@ -102,12 +102,12 @@ export function buildFlow(
       } else {
         row("OTHERWISE", "else", r`that block is skipped and the program carries on after it`);
       }
-      return { title: "How this decision works", rows };
+      return { title: "Which way the code goes", shape: "decision", rows };
     }
     case "else":
       row("IF", "if", r`none of the conditions above were true`);
       row("THEN", "then", r`${body} run${block && block.startLine !== block.endLine ? "" : "s"}`);
-      return { title: "How this decision works", rows };
+      return { title: "Which way the code goes", shape: "steps", rows };
     case "for":
     case "foreach": {
       const header = headerText(context, statement, keywordIndex);
@@ -115,21 +115,21 @@ export function buildFlow(
       row("DO", "then", r`${body}, once per round`);
       row("WHEN DONE", "else", r`the program carries on after the block`);
       row("NOTE", "note", r`if there is nothing to loop over, the block does not run at all`);
-      return { title: "How this loop works", rows };
+      return { title: "How the loop repeats", shape: "loop", rows };
     }
     case "while": {
       const condition = headerText(context, statement, keywordIndex);
       row("WHILE", "if", r`${c(condition)} is true`);
       row("REPEAT", "then", r`${body}, then check the condition again`);
       row("WHEN FALSE", "else", r`the loop stops and the program carries on after it`);
-      return { title: "How this loop works", rows };
+      return { title: "How the loop repeats", shape: "loop", rows };
     }
     case "with": {
       const header = headerText(context, statement, keywordIndex);
       row("FIRST", "if", r`set up ${c(header)}`);
       row("THEN", "then", r`${body} run${block && block.startLine !== block.endLine ? "" : "s"} using it`);
       row("FINALLY", "else", r`clean up automatically when the block ends, even if an error happened inside`);
-      return { title: "How this with-block works", rows };
+      return { title: "How the with-block works", shape: "steps", rows };
     }
     case "try": {
       row("TRY", "if", r`${body}`);
@@ -141,7 +141,7 @@ export function buildFlow(
         row("IF IT FAILS", "else", r`the error is passed on to whatever handles it`);
       }
       row("IF IT WORKS", "then", r`the error-handling block is skipped`);
-      return { title: "How this error handling works", rows };
+      return { title: "What happens if it fails", shape: "decision", rows };
     }
     case "except":
     case "catch": {
@@ -149,7 +149,7 @@ export function buildFlow(
       row("IF", "if", header ? r`the ${c("try")} block above fails with ${c(header)}` : r`the ${c("try")} block above fails`);
       row("THEN", "then", r`${body} run${block && block.startLine !== block.endLine ? "" : "s"}`);
       row("OTHERWISE", "else", r`this block is skipped`);
-      return { title: "How this error handling works", rows };
+      return { title: "What happens if it fails", shape: "decision", rows };
     }
     case "def":
     case "function":
@@ -158,7 +158,7 @@ export function buildFlow(
       row("WHEN", "if", r`something calls this function`);
       row("THEN", "then", r`${body} run${block && block.startLine !== block.endLine ? "" : "s"} with the inputs that were passed in`);
       row("NOTE", "note", r`reading this line only creates the function; the body does not run until it is called`);
-      return { title: "When this function runs", rows };
+      return { title: "When this function runs", shape: "steps", rows };
     }
     case "return": {
       const value = shorten(sourceText(context, keywordIndex + 1, statement.end).replace(/;$/, ""), 60);
@@ -171,7 +171,7 @@ export function buildFlow(
           : r`the function stops here${value ? r` and hands back ${c(value)}` : ""}`,
       );
       row("NOTE", "note", r`any lines after it in the same block are not run`);
-      return { title: "What return does here", rows };
+      return { title: "What return does here", shape: "steps", rows };
     }
     default:
       return undefined;

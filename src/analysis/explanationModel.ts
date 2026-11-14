@@ -89,7 +89,16 @@ export interface FlowRow {
 
 export interface Flow {
   readonly title: string;
+  /** decision: if/else diamond. loop: repeat cycle. steps: top-to-bottom sequence. */
+  readonly shape: "decision" | "loop" | "steps";
   readonly rows: readonly FlowRow[];
+}
+
+/** One box in the left-to-right step strip for an expression. */
+export interface Step {
+  /** Short verb above the box, e.g. "start", "look inside", "run with". */
+  readonly verb: string;
+  readonly code: string;
 }
 
 export interface WhatIf {
@@ -123,6 +132,10 @@ export interface Explanation {
   readonly emptyMessage?: string;
   /** The code being explained, as written. */
   readonly heading: string;
+  /** The single simplest sentence, shown big at the top. */
+  readonly headline: Rich;
+  /** Left-to-right steps for reading the expression; empty when not a chain. */
+  readonly steps: readonly Step[];
   /** e.g. "Import alias", "Function", "Variable". */
   readonly kindLabel: string;
   readonly languageLabel: string;

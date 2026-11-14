@@ -26,7 +26,9 @@ import {
   type GlossaryEntry,
   type MapNode,
   type ProviderStatusLine,
+  type CodeSpan,
   type Rich,
+  type Step,
   type WhatIf,
 } from "./explanationModel";
 import {
@@ -146,6 +148,8 @@ export function buildExplanation(
   const otherUses = sameKind.filter((occurrence) => !(occurrence.range.start.line === focusRange.start.line && occurrence.range.start.character === focusRange.start.character) && occurrence.role !== "introduction");
   const errorName = profile.family === "python" ? "a NameError" : profile.family === "javascript" ? "a ReferenceError" : "an error";
   let kindLabel = "Code";
+  let headline: Rich | undefined;
+  const short = (value: string, max = 36): CodeSpan => c(shorten(value, max));
   let originEvidence: string | undefined;
 
   // --- 1. what the focus is ---------------------------------------------------
@@ -154,11 +158,13 @@ export function buildExplanation(
       const info = profile.keywords[name];
       kindLabel = "Keyword";
       claim(meaning, "language", r`${c(name)} is a ${profile.label} keyword (${info.term}). ${info.plain}`);
+      headline = r`${c(name)} → ${firstSentence(info.plain)}`;
       define(info.term, info.plain);
       break;
     }
     case "string": {
       kindLabel = "Text";
+      headline = r`A piece of text: ${short(stringContent(name), 50)}`;
       claim(meaning, "language", r`This is a piece of text, called a string. The program uses these exact characters: ${c(shorten(stringContent(name), 60))}.`, selectionId);
       define("String", "A piece of text written inside quotes.");
       whatIf.push({
@@ -171,10 +177,12 @@ export function buildExplanation(
     }
     case "number":
       kindLabel = "Number";
+      headline = r`The number ${c(name)}`;
       claim(meaning, "language", r`${c(name)} is a number written directly in the code.`, selectionId);
       break;
     case "symbol":
       kindLabel = "Symbol";
+      headline = r`The symbol ${c(name)}`;
       claim(meaning, "language", r`${c(name)} is punctuation or an operator. The breakdown below says what each symbol on this line does.`);
       break;
     case "member": {
@@ -193,6 +201,7 @@ export function buildExplanation(
       const ownerOrigin = resolveName(context, ownerName, focus.line);
       if (ownerName === "self" || ownerName === "this") {
         claim(meaning, "language", r`${c(name)} belongs to the current object: ${c(ownerName)} means “the object this code is working on”.`, selectionId);
+        headline = r`${c(name)} = something stored on this object`;
         const method = context.declarations.find((declaration) => declaration.name === name && declaration.kind === "method");
         if (method) {
           const id = addEvidence("source", "Method declaration", method.nameRange);
@@ -212,11 +221,13 @@ export function buildExplanation(
             : r`${c(name)} is looked up inside ${c(ownerName)}, which line ${binding.line + 1} imports from ${c(binding.module)}. So ${c(name)} is something that import provides.`,
           id,
         );
+        headline = r`${c(name)} = something inside ${short(binding.isAlias ? binding.importedName : binding.module)}`;
         node("origin", "looked up inside", ownerName, "source", selectionId);
         node("origin", binding.isAlias ? `${ownerName} is short for` : `${ownerName} imported from`, binding.isAlias ? binding.importedName : binding.module, "source", id);
         unknowns.push(r`What ${c(name)} does inside ${c(binding.isAlias ? binding.importedName : binding.module)}. That code lives outside this file and Nexus has not read it.`);
       } else {
         claim(meaning, "language", r`${c(name)} is looked up inside ${c(ownerName)}. What it is depends on what ${c(ownerName)} holds.`, selectionId);
+        headline = r`${c(name)} = something inside ${short(ownerName)}`;
         node("origin", "looked up inside", ownerName, "source", selectionId);
         const described = describeOrigin(ownerName, ownerOrigin);
         if (described) {
@@ -238,19 +249,23 @@ export function buildExplanation(
           define("Import", "A line that loads code from another file or package so this file can use it.");
           if (binding.isAlias) {
             kindLabel = "Import alias";
+            headline = r`${c(name)} = short name for ${short(binding.importedName)}`;
             define("Alias", "A different, usually shorter, name given to something that was imported.");
             claim(meaning, "source", r`${c(name)} is a short name (an alias) for ${c(binding.importedName)}. Line ${binding.line + 1} says ${c(shorten(binding.statementText, 70))}, so everywhere in this file ${c(name)} means ${c(binding.importedName)}.`, id);
             node("origin", "short name for", binding.importedName, "source", id);
           } else if (binding.form === "default") {
             kindLabel = "Imported (default)";
+            headline = r`${c(name)} = the main thing from ${short(binding.module)}`;
             claim(meaning, "source", r`${c(name)} is the main (default) thing exported by ${c(binding.module)}. Line ${binding.line + 1} imports it.`, id);
             node("origin", "default export of", binding.module, "source", id);
           } else if (binding.form === "namespace") {
             kindLabel = "Imported module";
+            headline = r`${c(name)} = everything from ${short(binding.module)}`;
             claim(meaning, "source", r`${c(name)} holds everything exported by ${c(binding.module)}. Line ${binding.line + 1} imports it all under this one name.`, id);
             node("origin", "everything from", binding.module, "source", id);
           } else if (binding.form === "module") {
             kindLabel = "Imported module";
+            headline = r`${c(name)} = the ${short(binding.module)} module`;
             claim(
               meaning,
               binding.certainty === "explicit" ? "source" : "language",
@@ -262,6 +277,7 @@ export function buildExplanation(
             node("origin", "imported module", binding.module, "source", id);
           } else {
             kindLabel = "Imported name";
+            headline = r`${c(name)} comes from ${short(binding.module)}`;
             claim(meaning, "source", r`${c(name)} comes from ${c(binding.module)}: line ${binding.line + 1} imports it by name.`, id);
             node("origin", "imported from", binding.module, "source", id);
           }
@@ -294,6 +310,7 @@ export function buildExplanation(
 
           if (declaration.kind === "function" || declaration.kind === "method") {
             define("Function", "A named set of steps. It runs only when something calls it.");
+            headline = inputs.length === 0 ? r`${c(name)} = a ${declaration.kind} (a reusable set of steps)` : r`${c(name)} = a ${declaration.kind} that takes ${joinCode(inputs.slice(0, 4))}`;
             claim(
               meaning,
               "source",
@@ -320,6 +337,7 @@ export function buildExplanation(
             }
           } else {
             define("Class", "A blueprint that groups data and the functions that work on it.");
+            headline = r`${c(name)} = a ${declaration.kind} (a blueprint for objects)`;
             claim(meaning, "source", r`${c(name)} is a ${declaration.kind} ${onDeclaration ? "declared right here" : `declared on line ${declaration.line + 1} of this file`} (lines ${declaration.line + 1}–${declaration.endLine + 1}).`, id);
             const members = context.declarations.filter((candidate) => candidate.parent === context.declarations.indexOf(declaration));
             if (members.length > 0) {
@@ -342,11 +360,13 @@ export function buildExplanation(
         }
         case "builtin":
           kindLabel = "Built-in";
+          headline = r`${c(name)} = built into ${profile.label}`;
           claim(meaning, "language", r`${c(name)} is not introduced anywhere in this file. ${origin.description}`, selectionId);
           node("origin", "provided by", `${profile.label} itself`, "language", undefined, false);
           break;
         default: {
           kindLabel = "Name";
+          headline = r`${c(name)} comes from somewhere this file doesn't show`;
           claim(meaning, "source", r`This file does not show where ${c(name)} comes from: no import, assignment or declaration here introduces that name.`, selectionId);
           for (const wildcard of context.wildcardImports.slice(0, 2)) {
             const id = addEvidence("source", "Import that brings in unlisted names", wildcard.statementRange);
@@ -369,6 +389,7 @@ export function buildExplanation(
       case "parameter": {
         const scope = assignment.scope === -1 ? undefined : context.declarations[assignment.scope];
         kindLabel = "Parameter (input)";
+        headline = scope ? r`${c(name)} = an input to ${c(scope.name)}` : r`${c(name)} = a function input`;
         define("Parameter", "An input a function accepts. Its value is supplied by whoever calls the function.");
         claim(meaning, "source", r`${c(name)} is an input (a parameter) of ${scope ? r`the function ${c(scope.name)}` : "a function"}, declared on line ${line}. Its value is supplied by whoever calls ${scope ? c(scope.name) : "that function"}.`, id);
         node("origin", "input of function", scope?.name ?? assignment.statementText, "source", id);
@@ -383,16 +404,19 @@ export function buildExplanation(
       }
       case "loop-variable":
         kindLabel = "Loop variable";
+        headline = r`${c(name)} = each item of ${short(assignment.valueText)}, one at a time`;
         claim(meaning, "source", r`${c(name)} is a loop variable. Line ${line} says ${statement}, so ${c(name)} holds one item of ${c(shorten(assignment.valueText, 40))} at a time while the loop runs.`, id);
         node("origin", "one item at a time from", assignment.valueText, "source", id);
         break;
       case "with-as":
         kindLabel = "Variable";
+        headline = r`${c(name)} = what ${short(assignment.valueText)} sets up`;
         claim(meaning, "source", r`${c(name)} is the name line ${line} gives to what ${c(shorten(assignment.valueText, 40))} sets up, for use inside the ${c("with")} block.`, id);
         node("origin", "set up by", assignment.valueText, "source", id);
         break;
       case "except-as":
         kindLabel = "Caught error";
+        headline = r`${c(name)} = the error that was caught`;
         claim(meaning, "source", r`${c(name)} holds the error caught on line ${line}.`, id);
         node("origin", "the error caught on", `line ${line}`, "source", id, false);
         break;
@@ -400,6 +424,7 @@ export function buildExplanation(
         kindLabel = "Variable";
         if (assignment.siblingNames.length > 1 && assignment.unpack === "positional") {
           define("Unpacking", "Splitting a group of values into several names in one line.");
+          headline = r`${c(name)} = the ${ordinal(assignment.indexAmongSiblings)} piece of ${short(assignment.valueText)}`;
           claim(meaning, "source", r`${c(name)} is one of ${assignment.siblingNames.length} names given a value together on line ${line}: ${statement}.`, id);
           claim(meaning, "language", r`With several names on the left, ${profile.label} splits the result of ${c(shorten(assignment.valueText, 40))} into pieces by position. ${c(name)} receives the ${ordinal(assignment.indexAmongSiblings)} piece.`);
           whatIf.push({
@@ -409,13 +434,17 @@ export function buildExplanation(
             evidenceIds: [id],
           });
         } else if (assignment.unpack === "by-name") {
+          headline = r`${c(name)} = the ${c(name)} part of ${short(assignment.valueText)}`;
           claim(meaning, "source", r`${c(name)} is pulled out of ${c(shorten(assignment.valueText, 40))} by name on line ${line}: ${statement}. It receives the property called ${c(name)}.`, id);
         } else if (assignment.form === "update") {
           claim(meaning, "source", r`${c(name)} is a variable. Line ${line} updates it: ${statement}.`, id);
+          headline = r`${c(name)} = a value that gets updated (line ${line})`;
         } else if (assignment.valueText) {
           claim(meaning, "source", r`${c(name)} is a variable. The closest place this file gives it a value is line ${line}: ${statement}.`, id);
+          headline = r`${c(name)} = ${short(assignment.valueText, 44)}`;
         } else {
           claim(meaning, "source", r`${c(name)} is a variable declared on line ${line}: ${statement}.`, id);
+          headline = r`${c(name)} = a variable (line ${line})`;
         }
         node("origin", `gets its value on line ${line}`, assignment.valueText || assignment.statementText, "source", id);
         break;
@@ -480,6 +509,7 @@ export function buildExplanation(
   const chain = analysis.chain;
   let calleeText: string | undefined;
   const onOwnDeclaration = origin.kind === "declaration" && origin.declaration.line === focus.line;
+  const steps: Step[] = chain && chain.segments.length > 0 && !onOwnDeclaration ? chainSteps(context, chain) : [];
   if (chain && chain.segments.length > 0 && !onOwnDeclaration) {
     const described = describeChain(context, chain);
     calleeText = described.calleeText;
@@ -701,6 +731,8 @@ export function buildExplanation(
   return {
     hasContent: true,
     heading: shorten(analysis.expressionText, 120),
+    headline: headline ?? r`${c(name)}`,
+    steps,
     kindLabel,
     languageLabel: profile.label,
     supportLevel: profile.support,
@@ -729,6 +761,8 @@ function emptyExplanation(languageLabel: string, supportNote: string, supportLev
     hasContent: false,
     emptyMessage: "Nexus did not find code at the cursor. It may be a blank line or a comment. Click on a name, keyword or expression and try again.",
     heading: "",
+    headline: [],
+    steps: [],
     kindLabel: "",
     languageLabel,
     supportLevel,
@@ -919,6 +953,28 @@ function describeArguments(context: FileContext, args: readonly [number, number]
   });
 
   return parts;
+}
+
+function firstSentence(text: string): string {
+  const match = /^[^.!?]*[.!?]/.exec(text);
+  return (match ? match[0] : text).replace(/\.$/, "").replace(/^./, (character) => character.toLowerCase());
+}
+
+/** Left-to-right boxes for an expression: st → look inside: title → run with: "text". */
+function chainSteps(context: FileContext, chain: Chain): Step[] {
+  const { tokens } = context;
+  const steps: Step[] = [{ verb: "start with", code: tokens[chain.root].text }];
+  for (const segment of chain.segments.slice(0, 6)) {
+    if (segment.kind === "member") {
+      steps.push({ verb: "look inside for", code: tokens[segment.close].text });
+    } else if (segment.kind === "index") {
+      steps.push({ verb: "pick item", code: `[${shorten(sourceText(context, segment.open + 1, segment.close), 24)}]` });
+    } else {
+      const inside = sourceText(context, segment.open + 1, segment.close);
+      steps.push({ verb: inside ? "run it with" : "run it", code: inside ? shorten(inside, 40) : "()" });
+    }
+  }
+  return steps;
 }
 
 /** Picks the first line of provider documentation that reads like a sentence rather than a signature. */
