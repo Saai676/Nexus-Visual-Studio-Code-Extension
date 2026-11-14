@@ -1,0 +1,36 @@
+{
+  "name": "nexus",
+  "displayName": "Nexus",
+  "description": "IDE-integrated engineering intelligence for understanding unfamiliar codebases.",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.113.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:nexus.exploreCurrentSymbol"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "nexus.exploreCurrentSymbol",
+        "title": "Nexus: Explore Current Symbol",
+        "category": "Nexus"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.113.0",
+    "typescript": "^5.9.3"
+  }
+}
