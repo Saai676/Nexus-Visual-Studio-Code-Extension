@@ -20,9 +20,10 @@ Visual first, words second:
 | Read it left to right | The expression as numbered boxes with arrows: `st` → look inside for `title` → run it with `"…"` |
 | The pieces | Each part of the code as a coloured, labelled chip (click a chip for its meaning) |
 | How it connects | Concept map: where it comes from → what you selected → what it's used for |
+| Where this fits in the project | Zoom path (project › folder › file › function › selection), which files use this file and which it uses, and a map of every source file with related ones highlighted |
 | Flowchart | `if` → YES/NO branches; loops → a repeat cycle; `with`, `try`, functions, `return` → steps |
 | If you change this | **change → effect** cards |
-| AI summary *(optional)* | What it does in this project, written by an AI that only sees workspace files, with checked citations |
+| How this fits into your project *(AI, optional)* | A thorough plain-English explanation: what it is, its job, what goes in, what comes out, what relies on it, and a step-by-step flow through the project with clickable lines. The AI only sees workspace files (code, file list, README) |
 | Explain in words *(folded)* | The full written explanation, project context and documentation |
 | What Nexus can't tell you *(folded)* | Honest unknowns |
 | Evidence, glossary, limits *(folded)* | Every location used, the words explained, analysis limits |

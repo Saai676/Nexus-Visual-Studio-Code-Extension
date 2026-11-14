@@ -2,7 +2,7 @@
   "name": "nexus",
   "displayName": "Nexus",
   "description": "Understand unfamiliar code: plain-English, visual, evidence-backed explanations of whatever you select.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "engines": {
     "vscode": "^1.113.0"
@@ -101,7 +101,7 @@
         },
         "nexus.ai.geminiModel": {
           "type": "string",
-          "default": "gemini-2.5-flash",
+          "default": "gemini-3-flash-preview",
           "description": "Gemini model name, when the provider is gemini."
         }
       }

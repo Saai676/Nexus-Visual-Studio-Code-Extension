@@ -5,7 +5,8 @@
  * and previewed outside the editor. All text is escaped; the only
  * script is the small, nonce-protected navigation/AI handler.
  */
-import type { AiResult } from "./aiPrompt";
+import type { AiPoint, AiResult } from "./aiPrompt";
+import type { MapFile, ProjectMapView } from "./analysis/projectMap";
 import type {
   Basis,
   BreakdownPart,
@@ -150,7 +151,7 @@ function conceptMap(nodes: readonly MapNode[]): string {
 
 export function renderAiResult(result: AiResult | undefined, enabled: boolean): string {
   if (!enabled) {
-    return `<p class="muted">Want a plain-English summary of what this does in your project? Turn on <button type="button" class="link" data-command="enableAi">AI summaries</button>. The AI only sees files from this workspace, never the web.</p>`;
+    return `<p class="muted">Want a thorough, plain-English explanation of how this fits into your whole project? Turn on <button type="button" class="link" data-command="enableAi">AI summaries</button>. The AI only sees files from this workspace, never the web.</p>`;
   }
   if (!result) {
     return `<div class="ai-loading"><span class="spinner" aria-hidden="true"></span>Reading the related files in this project…</div>`;
@@ -159,20 +160,102 @@ export function renderAiResult(result: AiResult | undefined, enabled: boolean): 
     return `<p class="muted">${escapeHtml(result.message)}</p>`;
   }
 
-  const points = result.points
-    .map((point) => {
-      const cites = point.citations
-        .map((cite, index) => `<button type="button" class="jump" data-ai-cite="${escapeHtml(cite.uri)}|${cite.line}" title="${escapeHtml(cite.excerpt)}">${escapeHtml(cite.label)}:${cite.line + 1}</button>${index < point.citations.length - 1 ? "" : ""}`)
-        .join("");
-      return `<li>${escapeHtml(point.text)}${cites ? `<span class="jumps">${cites}</span>` : `<span class="muted small"> (no line cited)</span>`}</li>`;
-    })
-    .join("");
+  const cites = (point: AiPoint): string =>
+    point.citations.length > 0
+      ? `<span class="jumps">${point.citations.map((cite) => `<button type="button" class="jump" data-ai-cite="${escapeHtml(cite.uri)}|${cite.line}" title="${escapeHtml(cite.excerpt)}">${escapeHtml(cite.label.trim())}:${cite.line + 1}</button>`).join("")}</span>`
+      : `<span class="muted small">(no line cited)</span>`;
+
+  const flow = result.flow.length > 0
+    ? `<h3>How it fits, step by step</h3><div class="ai-flow">${result.flow
+        .map((step, index) => `${index > 0 ? `<div class="fc-down" aria-hidden="true">↓</div>` : ""}<div class="ai-step"><span class="ai-step-num">${index + 1}</span><div class="ai-step-body"><span>${escapeHtml(step.text)}</span>${cites(step)}</div></div>`)
+        .join("")}</div>`
+    : "";
+
+  const io = [
+    result.inputs ? `<div class="ai-io ai-in"><span class="whatif-kicker">⬅ goes in</span><span>${escapeHtml(result.inputs)}</span></div>` : "",
+    result.outputs ? `<div class="ai-io ai-out"><span class="whatif-kicker">comes out ➡</span><span>${escapeHtml(result.outputs)}</span></div>` : "",
+    result.dependsOnIt ? `<div class="ai-io ai-dep"><span class="whatif-kicker">⚠ relies on it</span><span>${escapeHtml(result.dependsOnIt)}</span></div>` : "",
+  ].join("");
+
+  const points = result.points.length > 0
+    ? `<h3>Good to know</h3><ul class="ai-points">${result.points.map((point) => `<li>${escapeHtml(point.text)} ${cites(point)}</li>`).join("")}</ul>`
+    : "";
 
   return `<p class="ai-summary">${escapeHtml(result.summary)}</p>
-${result.role ? `<p class="ai-role"><strong>Its role in the project:</strong> ${escapeHtml(result.role)}</p>` : ""}
-${points ? `<ul class="ai-points">${points}</ul>` : ""}
-<p class="muted small">Written by ${escapeHtml(result.model)} using only: ${escapeHtml(result.filesSent.join(", "))}. AI can be wrong. Check the cited lines.${result.droppedCitations > 0 ? ` ${result.droppedCitations} citation${result.droppedCitations === 1 ? " was" : "s were"} removed because ${result.droppedCitations === 1 ? "it did" : "they did"} not match the code that was sent.` : ""}</p>`;
+${result.role ? `<div class="ai-role"><span class="whatif-kicker">its job in the project</span><span>${escapeHtml(result.role)}</span></div>` : ""}
+${io ? `<div class="ai-ios">${io}</div>` : ""}
+${flow}
+${points}
+<p class="muted small">Written by ${escapeHtml(result.model)} using only files from this workspace (${escapeHtml(result.filesSent.map((file) => file.trim()).filter((file, index, all) => all.indexOf(file) === index).join(", "))}). AI can be wrong. Check the cited lines.${result.droppedCitations > 0 ? ` ${result.droppedCitations} citation${result.droppedCitations === 1 ? " was" : "s were"} removed because ${result.droppedCitations === 1 ? "it did" : "they did"} not match the code that was sent.` : ""}</p>`;
 }
+
+/** "Where this fits in the project": zoom path, connection diagram, and whole-project file map. */
+function projectSection(view: ProjectMapView): string {
+  const zoom = view.zoom
+    .map((step, index) => `${index > 0 ? `<span class="zoom-arrow" aria-hidden="true">›</span>` : ""}<span class="zoom zoom-${step.kind}"><span class="zoom-kind">${escapeHtml(ZOOM_LABEL[step.kind] ?? step.kind)}</span><span class="zoom-label">${step.kind === "selection" || step.kind === "declaration" ? `<code>${escapeHtml(step.label)}</code>` : escapeHtml(step.label)}</span></span>`)
+    .join("");
+
+  const fileButton = (path: string, uri: string, extra = ""): string =>
+    `<button type="button" class="pfile" data-open-uri="${escapeHtml(uri)}" title="${escapeHtml(path)}">${escapeHtml(path.split("/").pop() ?? path)}${extra}</button>`;
+  const column = (title: string, items: string[], empty: string): string =>
+    `<div class="pcol"><div class="map-col-title">${escapeHtml(title)}</div>${items.length > 0 ? items.join("") : `<div class="pempty">${escapeHtml(empty)}</div>`}</div>`;
+
+  const usedBy = view.usedBy.slice(0, 8).map((entry) => fileButton(entry.path, entry.uri, `<span class="pline">line ${entry.line + 1}</span>`));
+  const uses = view.uses.slice(0, 8).map((entry) => fileButton(entry.path, entry.uri, entry.names.length > 0 ? `<span class="pline">${escapeHtml(entry.names.slice(0, 3).join(", "))}</span>` : ""));
+  const center = `<div class="pcenter"><div class="map-col-title">This file</div><div class="pcurrent"><span class="pcurrent-file">${escapeHtml(view.currentPath.split("/").pop() ?? view.currentPath)}</span>${view.zoom
+    .filter((step) => step.kind === "declaration" || step.kind === "selection")
+    .map((step, index) => `<span class="pnest" style="margin-left:${index * 10}px">${step.kind === "selection" ? "★ " : "▸ "}<code>${escapeHtml(step.label)}</code></span>`)
+    .join("")}</div></div>`;
+  const connections = `<div class="pconn">${column("Used by", usedBy, "No project file imports this one")}<div class="map-arrow" aria-hidden="true">→</div>${center}<div class="map-arrow" aria-hidden="true">→</div>${column("Uses", uses, "Uses no other project file")}</div>`;
+
+  // Whole-project map grouped by folder.
+  const groups = new Map<string, MapFile[]>();
+  for (const file of view.files) {
+    const folder = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "(top level)";
+    const list = groups.get(folder) ?? [];
+    list.push(file);
+    groups.set(folder, list);
+  }
+  const important = (file: MapFile): boolean => file.role !== "other";
+  const folders = [...groups.entries()]
+    .sort((a, b) => Number(b[1].some(important)) - Number(a[1].some(important)) || a[0].localeCompare(b[0]))
+    .slice(0, 24)
+    .map(([folder, files]) => {
+      const sorted = [...files].sort((a, b) => Number(important(b)) - Number(important(a)) || a.path.localeCompare(b.path));
+      const shown = sorted.slice(0, 18);
+      return `<div class="pfolder"><div class="pfolder-name">📁 ${escapeHtml(folder)}</div><div class="pfolder-files">${shown
+        .map((file) => `<button type="button" class="pdot pdot-${file.role}" data-open-uri="${escapeHtml(file.uri)}" title="${escapeHtml(file.path)}: ${escapeHtml(ROLE_LABEL[file.role])}">${escapeHtml(file.path.split("/").pop() ?? file.path)}</button>`)
+        .join("")}${files.length > shown.length ? `<span class="muted small">+${files.length - shown.length} more</span>` : ""}</div></div>`;
+    })
+    .join("");
+  const legend = (["current", "definition", "used-by", "uses", "reference"] as const)
+    .map((role) => `<span class="plegend"><span class="pswatch pdot-${role}"></span>${escapeHtml(ROLE_LABEL[role])}</span>`)
+    .join("");
+
+  return `<div class="zoomrow">${zoom}</div>
+<h3>Connections</h3>${connections}
+<h3>The whole project <span class="muted small">(${view.totalFiles} source files${view.limited ? ", first ones shown" : ""})</span></h3>
+<div class="pmap">${folders}</div>
+<div class="plegends">${legend}</div>
+<p class="muted small">${tag("source")} Connections come from import statements that point to a file in this project. Click any file to open it.</p>`;
+}
+
+const ZOOM_LABEL: Readonly<Record<string, string>> = {
+  project: "project",
+  folder: "folder",
+  file: "file",
+  declaration: "inside",
+  selection: "you are here",
+};
+
+const ROLE_LABEL: Readonly<Record<MapFile["role"], string>> = {
+  current: "this file",
+  definition: "where it's defined",
+  "used-by": "imports this file",
+  uses: "imported by this file",
+  reference: "also uses it (language server)",
+  other: "other project file",
+};
 
 export function renderPanel(explanation: Explanation, options: PanelRenderOptions): string {
   const evidence = new Map(explanation.evidence.map((entry) => [entry.id, entry]));
@@ -211,6 +294,9 @@ function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evid
   <p class="muted small where"><code>${escapeHtml(explanation.heading)}</code> · ${escapeHtml(options.displayPath)} line ${explanation.range.start.line + 1}</p>
 </header>`);
 
+  // 1b. AI summary (optional): the thorough plain-English explanation.
+  parts.push(section("ai", "✨", "How this fits into your project", `<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
+
   // 2. Read it left to right.
   if (explanation.steps.length > 1) {
     const boxes = explanation.steps
@@ -229,6 +315,11 @@ function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evid
     parts.push(section("map", "🗺️", "How it connects", conceptMap(explanation.map.nodes)));
   }
 
+  // 4b. The whole project.
+  if (explanation.projectMap && explanation.projectMap.totalFiles > 1) {
+    parts.push(section("project-map", "🧭", "Where this fits in the project", projectSection(explanation.projectMap)));
+  }
+
   // 5. Flowchart.
   if (explanation.flow) {
     parts.push(section("flow", "🔀", explanation.flow.title, `${flowchart(explanation.flow)}<p class="muted small">${tag("language")} How the language works in general, not proof this code runs.</p>`));
@@ -242,8 +333,6 @@ function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evid
     parts.push(section("whatif", "🔧", "If you change this", `<div class="whatifs">${cards}</div>`));
   }
 
-  // 7. AI summary (optional).
-  parts.push(section("ai", "✨", "AI summary: what it does in this project", `<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
 
   // 8. Words, folded away.
   const words: string[] = [];
@@ -457,6 +546,50 @@ summary{cursor:pointer;font-weight:600;padding:2px 0}
 .evidence-excerpt{grid-column:1/-1;white-space:pre-wrap}
 pre.doc{white-space:pre-wrap;font-family:var(--vscode-editor-font-family);font-size:.9em;background:var(--vscode-textCodeBlock-background,rgba(128,128,128,.12));padding:10px;border-radius:6px;max-height:260px;overflow:auto}
 .empty h1{font-size:1.1em}
+.ai-role{display:flex;flex-direction:column;gap:3px;border-left:3px solid var(--b-ai);padding:4px 10px;margin:4px 0 10px}
+.ai-ios{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:8px 0}
+.ai-io{border-radius:9px;padding:8px 11px;display:flex;flex-direction:column;gap:3px;border:1px solid var(--border);background:var(--bg)}
+.ai-in{border-color:color-mix(in srgb,var(--c-keyword) 45%,transparent)}
+.ai-out{border-color:color-mix(in srgb,var(--b-source) 45%,transparent)}
+.ai-dep{border-color:color-mix(in srgb,var(--b-name-match) 55%,transparent)}
+.ai-flow{display:flex;flex-direction:column;align-items:stretch;gap:2px}
+.ai-flow .fc-down{text-align:center}
+.ai-step{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:9px;padding:8px 11px;background:var(--bg)}
+.ai-step-num{flex:none;width:22px;height:22px;border-radius:50%;background:var(--b-ai);color:#000;font-weight:800;font-size:.78em;display:flex;align-items:center;justify-content:center}
+.ai-step-body{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+.zoomrow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:6px}
+.zoom{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:8px;padding:4px 10px;background:var(--bg)}
+.zoom-kind{font-size:.65em;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700}
+.zoom-label{font-weight:600}
+.zoom-selection{border:2px solid var(--accent)}
+.zoom-file{border-color:color-mix(in srgb,var(--accent) 50%,transparent)}
+.zoom-arrow{color:var(--muted);font-size:1.3em}
+.pconn{display:grid;grid-template-columns:1fr auto minmax(140px,1fr) auto 1fr;gap:8px;align-items:center}
+.pcol{display:flex;flex-direction:column;gap:5px;min-width:0}
+.pfile{font:inherit;text-align:left;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:8px;padding:5px 9px;background:var(--bg);color:var(--fg);cursor:pointer;overflow-wrap:anywhere}
+.pfile:hover{border-color:var(--focus)}
+.pline{font-size:.72em;color:var(--muted)}
+.pempty{font-size:.85em;color:var(--muted);border:1px dashed var(--border);border-radius:8px;padding:8px;text-align:center}
+.pcenter{display:flex;flex-direction:column;gap:5px}
+.pcurrent{border:2px solid var(--accent);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:3px;background:var(--bg)}
+.pcurrent-file{font-weight:700}
+.pnest{font-size:.9em}
+.pmap{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow:auto;padding-right:4px}
+.pfolder{display:grid;grid-template-columns:minmax(90px,170px) 1fr;gap:8px;align-items:start}
+.pfolder-name{font-size:.82em;color:var(--muted);overflow-wrap:anywhere;padding-top:3px}
+.pfolder-files{display:flex;flex-wrap:wrap;gap:4px}
+.pdot{font:inherit;font-size:.78em;font-family:var(--vscode-editor-font-family);border-radius:6px;padding:1px 7px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer}
+.pdot:hover{border-color:var(--focus)}
+.pdot-current{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:700}
+.pdot-definition{background:color-mix(in srgb,var(--b-language) 30%,transparent);color:var(--fg);border-color:var(--b-language)}
+.pdot-used-by{background:color-mix(in srgb,var(--b-source) 28%,transparent);color:var(--fg);border-color:var(--b-source)}
+.pdot-uses{background:color-mix(in srgb,var(--c-keyword) 26%,transparent);color:var(--fg);border-color:var(--c-keyword)}
+.pdot-reference{background:color-mix(in srgb,var(--b-provider) 26%,transparent);color:var(--fg);border-color:var(--b-provider)}
+.plegends{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:.82em;color:var(--muted)}
+.plegend{display:flex;align-items:center;gap:5px}
+.pswatch{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid var(--border)}
+@media (max-width:560px){.pconn{grid-template-columns:1fr}.pfolder{grid-template-columns:1fr}}
+
 .headline{font-size:1.45em;line-height:1.35;font-weight:600;margin:10px 0 4px;overflow-wrap:anywhere}
 .headline code{font-size:.95em;padding:2px 7px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--fg)}
 .where code{background:none;padding:0}
@@ -509,8 +642,9 @@ details.words>summary,details.unknown-box>summary,.card-quiet details>summary{di
 const SCRIPT = `
 const vscode = acquireVsCodeApi();
 document.addEventListener("click", (event) => {
-  const target = event.target instanceof Element ? event.target.closest("[data-evidence-id],[data-ai-cite],[data-command],[data-legend]") : null;
+  const target = event.target instanceof Element ? event.target.closest("[data-evidence-id],[data-ai-cite],[data-command],[data-legend],[data-open-uri]") : null;
   if (!target) { return; }
+  if (target.dataset.openUri) { vscode.postMessage({ command: "openFile", uri: target.dataset.openUri }); return; }
   if (target.dataset.evidenceId) { vscode.postMessage({ command: "navigate", evidenceId: target.dataset.evidenceId }); return; }
   if (target.dataset.aiCite) { vscode.postMessage({ command: "navigateAi", cite: target.dataset.aiCite }); return; }
   if (target.dataset.command) { vscode.postMessage({ command: target.dataset.command }); return; }

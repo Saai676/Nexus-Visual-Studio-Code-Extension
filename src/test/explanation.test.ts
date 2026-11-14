@@ -223,3 +223,51 @@ test("if statements render as a YES/NO flowchart and loops as a repeat cycle", (
   assert.equal(loop.flow?.shape, "loop");
   assert.ok(renderPanel(loop, { nonce: "n", cspSource: "x", displayPath: "a.py", aiEnabled: false, followCursor: false }).includes("fc-back"));
 });
+
+test("project map: resolves imports between project files and finds who uses the current file", async () => {
+  const { buildProjectGraph, buildMapView } = await import("../analysis/projectMap");
+  const files = [
+    { path: "main.py", uri: "file:///p/main.py", languageId: "python", text: "from app.utils import parse\nimport app.report as rep\nimport streamlit as st\n" },
+    { path: "app/utils.py", uri: "file:///p/app/utils.py", languageId: "python", text: "from .report import build\n\ndef parse(x):\n    return build(x)\n" },
+    { path: "app/report.py", uri: "file:///p/app/report.py", languageId: "python", text: "def build(x):\n    return x\n" },
+    { path: "web/index.ts", uri: "file:///p/web/index.ts", languageId: "typescript", text: "import { api } from './api';\nimport React from 'react';\n" },
+    { path: "web/api.ts", uri: "file:///p/web/api.ts", languageId: "typescript", text: "export const api = 1;\n" },
+  ];
+  const graph = buildProjectGraph(files, false);
+  const edges = graph.edges.map((edge) => `${edge.from}->${edge.to}`).sort();
+  assert.deepEqual(edges, ["app/utils.py->app/report.py", "main.py->app/report.py", "main.py->app/utils.py", "web/index.ts->web/api.ts"]);
+
+  const view = buildMapView({ graph, currentPath: "app/utils.py", projectName: "p", enclosing: ["function parse"], selectionLabel: "build(x)", definitionPaths: ["app/report.py"], referencePaths: [] });
+  assert.deepEqual(view.usedBy.map((entry) => entry.path), ["main.py"]);
+  assert.deepEqual(view.uses.map((entry) => entry.path), ["app/report.py"]);
+  assert.deepEqual(view.zoom.map((step) => step.label), ["p", "app", "utils.py", "function parse", "build(x)"]);
+  assert.equal(view.files.find((file) => file.path === "app/report.py")?.role, "definition");
+});
+
+test("AI answers: thorough fields (flow steps, inputs, outputs, dependents) are parsed and checked", () => {
+  const { sentLines, filesSent } = buildPrompt({
+    languageLabel: "Python",
+    selectedCode: "st",
+    selectionLabel: "main.py",
+    selectionLine: 0,
+    files: [{ label: "main.py", uri: "file:///main.py", firstLine: 0, lines: FINANCE.split("\n"), role: "the open file" }],
+    verifiedFacts: [],
+    projectFiles: ["main.py", "app/utils.py"],
+  });
+  const answer = JSON.stringify({
+    summary: "st is the Streamlit module under a short name. It is used to draw every part of the page.",
+    role: "It builds the whole user interface.",
+    flow: [{ text: "Line 1 loads Streamlit as st", cite: [{ file: "main.py", line: 1 }] }, { text: "Line 3 draws the title", cite: [{ file: "main.py", line: 3 }] }],
+    inputs: "The streamlit library",
+    outputs: "The page the user sees",
+    dependsOnIt: "Every UI line in main.py",
+    points: [],
+  });
+  const result = parseAnswer(answer, "m", sentLines, filesSent);
+  assert.equal(result.status, "ok");
+  if (result.status === "ok") {
+    assert.equal(result.flow.length, 2);
+    assert.equal(result.flow[1].citations[0].line, 2);
+    assert.equal(result.outputs, "The page the user sees");
+  }
+});

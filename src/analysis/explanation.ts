@@ -70,6 +70,7 @@ export interface ProviderEvidence {
   readonly documentation: readonly ProviderDocumentation[];
   readonly definitionContexts?: readonly DefinitionContext[];
   readonly importers?: readonly ImporterContext[];
+  readonly projectMap?: import("./projectMap").ProjectMapView;
   /** How many files were scanned for importers, and whether the scan hit its limit. */
   readonly importerScan?: { readonly filesScanned: number; readonly limited: boolean };
 }
@@ -147,6 +148,7 @@ export function buildExplanation(
   const sameKind = occurrences.filter((occurrence) => (analysis.focusKind === "member" ? occurrence.role === "member" : occurrence.role !== "member" && occurrence.role !== "keyword-argument" && occurrence.role !== "property-key"));
   const otherUses = sameKind.filter((occurrence) => !(occurrence.range.start.line === focusRange.start.line && occurrence.range.start.character === focusRange.start.character) && occurrence.role !== "introduction");
   const errorName = profile.family === "python" ? "a NameError" : profile.family === "javascript" ? "a ReferenceError" : "an error";
+  const importingFiles = (provider.projectMap?.usedBy ?? []).map((entry) => entry.path.split("/").pop() ?? entry.path);
   let kindLabel = "Code";
   let headline: Rich | undefined;
   const short = (value: string, max = 36): CodeSpan => c(shorten(value, max));
@@ -323,7 +325,9 @@ export function buildExplanation(
               change: r`If you renamed ${c(name)}`,
               effect: otherUses.length > 0
                 ? r`${capitalizeFirst(formatLineList(otherUses.map((occurrence) => occurrence.line)))} would break unless renamed too. Other files may use it as well.`
-                : r`Any code that uses it by name would break. None found in this file; other files may use it.`,
+                : importingFiles.length > 0
+                  ? r`The ${plural(importingFiles.length, "file")} that import this one could break: ${joinCode(importingFiles.slice(0, 4))}${importingFiles.length > 4 ? " and more" : ""}.`
+                  : r`Any code that uses it by name would break. None found in this file; other files may use it.`,
               basis: "source",
               evidenceIds: [id],
             });
@@ -753,6 +757,7 @@ export function buildExplanation(
     glossary: [...glossary.entries()].map(([term, plain]): GlossaryEntry => ({ term, plain })),
     limits,
     providerStatus,
+    projectMap: provider.projectMap,
   };
 }
 
