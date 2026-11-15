@@ -2,6 +2,86 @@
 
 A VS Code extension that explains whatever code you select in plain English, visually, and shows you the evidence behind every claim.
 
+## Download & install
+
+Nexus isn't on the VS Code Marketplace yet, so you install it from this GitHub repo. It takes about 5 minutes the first time.
+
+### What you need
+
+| Tool | Check it's installed | Get it |
+|---|---|---|
+| **VS Code** 1.113 or newer | Code → About Visual Studio Code | [code.visualstudio.com](https://code.visualstudio.com/) |
+| **Git** | `git --version` | [git-scm.com](https://git-scm.com/downloads) (macOS: `xcode-select --install`) |
+| **Node.js** 18 or newer (comes with npm) | `node --version` and `npm --version` | [nodejs.org](https://nodejs.org/) (LTS version) |
+
+Also make the `code` command work in your terminal: open VS Code → Cmd/Ctrl+Shift+P → **Shell Command: Install 'code' command in PATH**.
+
+### Option 1: Install it like a normal extension (recommended)
+
+Open a terminal (macOS: the **Terminal** app; Windows: **PowerShell**) and run these one at a time:
+
+```bash
+# 1. Download the code
+git clone https://github.com/Saai676/Nexus-Visual-Studio-Code-Extension.git
+cd Nexus-Visual-Studio-Code-Extension
+
+# 2. Install what it needs and build the extension file (creates nexus-<version>.vsix)
+npm install
+rm -f nexus-*.vsix
+npm run package
+
+# 3. Install it into VS Code
+code --install-extension nexus-*.vsix --force
+```
+
+On **Windows (PowerShell)**, skip the `rm` line and type the real file name instead of `nexus-*.vsix`, e.g. `code --install-extension nexus-0.7.0.vsix --force`.
+
+Then in VS Code press **Cmd/Ctrl+Shift+P** → **Developer: Reload Window**.
+
+Nexus is now installed. Open any project (**File → Open Folder…**) and:
+
+- click on some code → press the 💡 button (or **Cmd/Ctrl+Alt+E**) to explain it
+- press **Cmd/Ctrl+Alt+P** (or Cmd/Ctrl+Shift+P → **Nexus: Explain This Project**) for the whole-project view
+
+**Prefer clicking?** After step 2, in VS Code open **Extensions** (Cmd/Ctrl+Shift+X) → **`···`** menu at the top → **Install from VSIX…** → choose the `nexus-<version>.vsix` file in the Nexus folder.
+
+### Getting updates
+
+```bash
+cd Nexus-Visual-Studio-Code-Extension
+git pull
+npm install
+rm -f nexus-*.vsix
+npm run package
+code --install-extension nexus-*.vsix --force
+```
+
+Then **Developer: Reload Window**.
+
+### Option 2: Try it without installing (for working on Nexus itself)
+
+Open the Nexus folder in VS Code and press **F5**. A second window titled **[Extension Development Host]** opens with Nexus loaded. Open a project in *that* window. See [Run from source (F5)](#run-from-source-f5) for details.
+
+### Turn on the AI explanations (optional)
+
+Everything works without AI. To add the plain-English AI sections:
+
+1. Settings (Cmd/Ctrl+,) → search **nexus ai** → tick **Nexus › AI: Enabled**.
+2. Either sign in to **GitHub Copilot** in VS Code (no key needed), or set **Nexus › AI: Provider** to `gemini` and run **Nexus: Set Gemini API Key**.
+3. The first time, Nexus asks before sending any code. The AI only sees files from your workspace.
+
+### Troubleshooting
+
+| You see | What to do |
+|---|---|
+| `git: command not found` / `npm: command not found` | Install Git / Node.js from the table above, then open a **new** terminal window. |
+| `code: command not found` | In VS Code: Cmd/Ctrl+Shift+P → **Shell Command: Install 'code' command in PATH**, then open a new terminal. Or use **Install from VSIX…** instead. |
+| *"not compatible with VS Code"* | Update VS Code (Code → Check for Updates). |
+| *"command 'nexus.explain' not found"* | Run **Developer: Reload Window**. If you use F5, make sure you're in the **[Extension Development Host]** window. |
+| *"Explain This Project"* is missing | You have an older version: repeat **Getting updates** above. |
+| F5 says *preLaunchTask … exited with code 127* | VS Code can't find npm. Quit VS Code, open it from a terminal with `code .` inside the Nexus folder, and press F5 again. |
+| The panel says *Open a project folder first* | Use **File → Open Folder…** (not just a single file). |
+
 ## Use it
 
 1. Open any file and click on (or select) some code.
