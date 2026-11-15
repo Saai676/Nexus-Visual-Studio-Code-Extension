@@ -26,6 +26,8 @@ export interface AiRequest {
   readonly projectFiles?: readonly string[];
   /** How simply to explain. Defaults to "beginner". */
   readonly level?: ExplainLevel;
+  /** Replaces the final instruction (used for the whole-project explanation). */
+  readonly task?: string;
 }
 
 export type ExplainLevel = "five" | "middle" | "beginner" | "developer";
@@ -166,7 +168,7 @@ ${sections.join("\n\n")}
 
 ${levelStyle(request.level)}
 
-Explain what the selected code does in the context of these files.`;
+${request.task ?? "Explain what the selected code does in the context of these files."}`;
 
   return { prompt, sentLines, filesSent };
 }
@@ -256,4 +258,117 @@ function extractJson(text: string): unknown {
     }
     return undefined;
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Whole-project explanation
+// ---------------------------------------------------------------------------
+
+export const PROJECT_SYSTEM_PROMPT = `You explain a whole software project to someone who has never seen it, inside the Nexus VS Code extension.
+
+Rules you must follow:
+1. Use ONLY the numbered files, the file list and the facts given below. Never invent files, features or behaviour. Do not mention websites.
+2. You may use general programming knowledge to explain well-known libraries and language features, and say when you do.
+3. When the files shown do not tell you something, say so plainly.
+4. Cite the file label and line number for every claim about this project, exactly as numbered.
+5. Be thorough but simple, following the READING LEVEL given at the end.
+
+Reply with JSON only, no markdown fences, in this shape:
+{"summary": "3-6 sentences: what this project is, what it does for its user, and how it does it at a high level",
+ "purpose": "one sentence: the problem this project solves",
+ "howItWorks": [{"text": "one step of what happens when the program runs, in order", "cite": [{"file": "main.py", "line": 3}]}],
+ "parts": [{"file": "exact/path/from/the/file/list.py", "role": "one short sentence: the job of this file"}],
+ "selectionFit": {"text": "2-4 sentences: where the user's selected code sits in this whole project and why it matters", "steps": [{"text": "step from the program's start down to the selection", "cite": [{"file": "main.py", "line": 3}]}]},
+ "startHere": "one sentence of advice: which file to read first and why"}
+"howItWorks" should have 3-7 steps. "parts" should cover the most important files (at most 8), using paths exactly as in the file list. If no code was selected, set "selectionFit" to null.`;
+
+export interface ProjectPart {
+  readonly path: string;
+  readonly uri?: string;
+  readonly role: string;
+}
+
+export type ProjectAiResult =
+  | {
+      readonly status: "ok";
+      readonly model: string;
+      readonly summary: string;
+      readonly purpose?: string;
+      readonly howItWorks: readonly AiPoint[];
+      readonly parts: readonly ProjectPart[];
+      readonly selectionFit?: { readonly text: string; readonly steps: readonly AiPoint[] };
+      readonly startHere?: string;
+      readonly droppedCitations: number;
+      readonly filesSent: readonly string[];
+    }
+  | { readonly status: "disabled" | "declined" | "unavailable" | "failed"; readonly message: string };
+
+/** Validates the whole-project answer: citations must match lines sent, parts must be real project files. */
+export function parseProjectAnswer(
+  text: string,
+  model: string,
+  sentLines: ReadonlyMap<string, SentLine>,
+  filesSent: readonly string[],
+  projectFiles: readonly { readonly path: string; readonly uri: string }[],
+): ProjectAiResult {
+  const json = extractJson(text);
+  if (!json || typeof json !== "object") {
+    return { status: "failed", message: "The AI answer was not in the expected format, so Nexus did not show it." };
+  }
+  const record = json as Record<string, unknown>;
+  const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+  if (!summary) {
+    return { status: "failed", message: "The AI answer had no summary, so Nexus did not show it." };
+  }
+
+  let dropped = 0;
+  const points = (value: unknown, max: number): AiPoint[] =>
+    (Array.isArray(value) ? value.slice(0, max) : [])
+      .map((raw) => {
+        const point = (raw ?? {}) as Record<string, unknown>;
+        const pointText = typeof point.text === "string" ? point.text.trim().slice(0, 400) : "";
+        const citations: AiCitation[] = [];
+        for (const cite of Array.isArray(point.cite) ? point.cite.slice(0, 4) : []) {
+          const entry = (cite ?? {}) as Record<string, unknown>;
+          const key = `${typeof entry.file === "string" ? entry.file.trim() : ""}:${typeof entry.line === "number" ? Math.trunc(entry.line) : NaN}`;
+          const sent = sentLines.get(key);
+          if (sent) {
+            citations.push({ uri: sent.uri, label: sent.label, line: Number(key.slice(key.lastIndexOf(":") + 1)) - 1, excerpt: sent.text.trim().slice(0, 140) });
+          } else {
+            dropped += 1;
+          }
+        }
+        return { text: pointText, citations };
+      })
+      .filter((point) => point.text.length > 0);
+
+  const byPath = new Map(projectFiles.map((file) => [file.path, file.uri]));
+  const parts: ProjectPart[] = [];
+  for (const raw of Array.isArray(record.parts) ? record.parts.slice(0, 8) : []) {
+    const entry = (raw ?? {}) as Record<string, unknown>;
+    const path = typeof entry.file === "string" ? entry.file.trim().replace(/^\.?\//, "") : "";
+    const role = typeof entry.role === "string" ? entry.role.trim().slice(0, 240) : "";
+    if (path && role && byPath.has(path) && !parts.some((part) => part.path === path)) {
+      parts.push({ path, uri: byPath.get(path), role });
+    }
+  }
+
+  const fit = record.selectionFit && typeof record.selectionFit === "object" ? (record.selectionFit as Record<string, unknown>) : undefined;
+  const fitText = fit && typeof fit.text === "string" ? fit.text.trim().slice(0, 900) : "";
+  const optional = (value: unknown, max: number): string | undefined =>
+    typeof value === "string" && value.trim() && value.trim().toLowerCase() !== "null" ? value.trim().slice(0, max) : undefined;
+
+  return {
+    status: "ok",
+    model,
+    summary: summary.slice(0, 1400),
+    purpose: optional(record.purpose, 300),
+    howItWorks: points(record.howItWorks, 7),
+    parts,
+    selectionFit: fitText ? { text: fitText, steps: points(fit?.steps, 6) } : undefined,
+    startHere: optional(record.startHere, 300),
+    droppedCitations: dropped,
+    filesSent: [...filesSent],
+  };
 }

@@ -27,8 +27,19 @@ export interface ImportEdge {
   readonly names: readonly string[];
 }
 
+export interface GraphFile {
+  readonly path: string;
+  readonly uri: string;
+  readonly languageId: string;
+  /** Top-level functions and classes defined in the file (names, at most 8). */
+  readonly defines: readonly string[];
+  readonly lineCount: number;
+  /** Why this looks like a place the program starts, if it does. */
+  readonly entryReason?: string;
+}
+
 export interface ProjectGraph {
-  readonly files: readonly { readonly path: string; readonly uri: string }[];
+  readonly files: readonly GraphFile[];
   readonly edges: readonly ImportEdge[];
   readonly limited: boolean;
 }
@@ -58,17 +69,32 @@ const MAX_FILE_CHARACTERS = 300_000;
 export function buildProjectGraph(files: readonly ProjectFile[], limited: boolean): ProjectGraph {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const edges: ImportEdge[] = [];
+  const graphFiles: GraphFile[] = [];
 
   for (const file of files) {
+    const lineCount = file.text ? file.text.split("\n").length : 0;
     if (file.text.length > MAX_FILE_CHARACTERS) {
+      graphFiles.push({ path: file.path, uri: file.uri, languageId: file.languageId, defines: [], lineCount });
       continue;
     }
     let context;
     try {
       context = buildFileContext(file.text, profileFor(file.languageId));
     } catch {
+      graphFiles.push({ path: file.path, uri: file.uri, languageId: file.languageId, defines: [], lineCount });
       continue;
     }
+    graphFiles.push({
+      path: file.path,
+      uri: file.uri,
+      languageId: file.languageId,
+      defines: context.declarations
+        .filter((declaration) => declaration.parent === -1 && declaration.kind !== "module")
+        .slice(0, 8)
+        .map((declaration) => (declaration.kind === "function" ? `${declaration.name}()` : declaration.name)),
+      lineCount,
+      entryReason: entryReasonFor(file),
+    });
 
     const modules = new Map<string, { line: number; excerpt: string; names: string[] }>();
     const note = (module: string, line: number, excerpt: string, name?: string): void => {
@@ -97,7 +123,40 @@ export function buildProjectGraph(files: readonly ProjectFile[], limited: boolea
     }
   }
 
-  return { files: files.map((file) => ({ path: file.path, uri: file.uri })), edges, limited };
+  return { files: graphFiles, edges, limited };
+}
+
+/** Recognises files that look like the place a program starts, from what is written in them. */
+export function entryReasonFor(file: ProjectFile): string | undefined {
+  const name = file.path.split("/").pop() ?? file.path;
+  const text = file.text;
+  switch (file.languageId) {
+    case "python":
+      if (/^if\s+__name__\s*==\s*["']__main__["']\s*:/m.test(text)) return "has `if __name__ == \"__main__\"`, so it runs when started directly";
+      if (name === "__main__.py") return "`__main__.py` runs when the package is started";
+      if (/^\s*import\s+streamlit\b|^\s*from\s+streamlit\b/m.test(text) && /\bst\.(title|set_page_config|header)\s*\(/.test(text)) return "a Streamlit app page (started with `streamlit run`)";
+      if (/\b(Flask|FastAPI)\s*\(/.test(text)) return "creates the web app (Flask/FastAPI)";
+      if (name === "manage.py") return "Django's command-line starter";
+      break;
+    case "go":
+      if (/^package\s+main\b/m.test(text) && /\bfunc\s+main\s*\(/.test(text)) return "has `func main()` in `package main`";
+      break;
+    case "rust":
+      if (/\bfn\s+main\s*\(/.test(text)) return "has `fn main()`";
+      break;
+    case "java":
+    case "csharp":
+      if (/\bstatic\s+(void|async\s+\w+)\s+[Mm]ain\s*\(/.test(text)) return "has a `main` method";
+      break;
+    case "c":
+    case "cpp":
+      if (/\bint\s+main\s*\(/.test(text)) return "has `int main()`";
+      break;
+    default:
+      if (/^(index|main|app|server|cli)\.(js|ts|mjs|cjs|jsx|tsx)$/.test(name) && file.path.split("/").length <= 2) return `named \`${name}\`, a usual starting file`;
+      if (/\bapp\.listen\s*\(|\bcreateServer\s*\(|\bReactDOM\.(createRoot|render)\s*\(|\bactivate\s*\(\s*context/.test(text)) return "starts a server, an app or an extension";
+  }
+  return undefined;
 }
 
 /** Resolves an import string to exactly one workspace file path, or undefined. */

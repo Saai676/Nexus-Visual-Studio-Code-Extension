@@ -30,6 +30,17 @@ Visual first, words second:
 
 Evidence tags: **seen in file** (read in source), **language server** (reported by VS Code), **language rule** (general language knowledge), **name match** (same spelling only, not proof), **AI**.
 
+### Explain the whole project
+
+Press **🗺️ Explain the whole project** at the top of the Nexus panel, the 🗺️ button in the editor title bar, right-click a folder in the Explorer, or **Cmd/Ctrl+Alt+P**. It opens a project overview:
+
+- **Where your selection fits**: project › folder › file › selection, plus the chain of imports from where the program starts down to your file
+- **What this project is and how it works** *(AI, optional)*: a simple explanation of the whole project, the problem it solves, a step-by-step flow, the main parts, where to start reading, and how your selected code fits in, at your chosen reading level
+- **How the files connect**: a diagram with the starting files on the left and each column one import further away; files are tagged *starts here*, *core*, *helper*, *test* or *on its own*
+- **Read the project in this order**: a suggested reading tour
+
+The structure (starting files, diagram, tour) comes from the code's own import statements, with no AI involved.
+
 ### Explain like I'm…
 
 The AI explanation has a reading-level picker: **🧸 5-year-old**, **🎒 Middle schooler**, **🌱 Beginner coder** (default) and **💻 Developer**. Click one to re-explain the same code at that level; your choice is saved in the `nexus.ai.explainLevel` setting. Only the wording changes. The AI still has to cite real lines and stays inside the workspace.

@@ -3,6 +3,7 @@ import { AiSummarizer, type AiContextFile, type AiRequest } from "./aiSummary";
 import { EXPLAIN_LEVELS, type ExplainLevel } from "./aiPrompt";
 import { summarizeDeclarationAt } from "./analysis/crossFile";
 import { buildMapView, buildProjectGraph, describeMapForAi, type ProjectFile, type ProjectGraph, type ProjectMapView } from "./analysis/projectMap";
+import { buildProjectOverview, type ProjectOverview } from "./analysis/projectOverview";
 import {
   buildExplanation,
   type DefinitionContext,
@@ -46,11 +47,70 @@ export function activate(context: vscode.ExtensionContext): void {
   let followTimer: NodeJS.Timeout | undefined;
   let running = 0;
   /** The AI request behind the current panel, so the reading level can be changed without re-running everything. */
-  let lastAi: { version: number; request: AiRequest } | undefined;
+  let lastAi: { version: number; request: AiRequest; kind?: "selection" | "project"; projectFiles?: readonly { path: string; uri: string }[] } | undefined;
   const currentLevel = (): ExplainLevel => {
     const value = config().get<string>("ai.explainLevel", "beginner");
     return EXPLAIN_LEVELS.some((entry) => entry.id === value) ? (value as ExplainLevel) : "beginner";
   };
+
+  async function runProjectAi(version: number, request: AiRequest, projectFiles: readonly { path: string; uri: string }[]): Promise<void> {
+    aiCancellation?.cancel();
+    aiCancellation?.dispose();
+    const source = new vscode.CancellationTokenSource();
+    aiCancellation = source;
+    const result = await ai.summarizeProject(request, projectFiles, source.token);
+    if (!source.token.isCancellationRequested) {
+      panel.showProjectAiResult(version, result, true);
+    }
+  }
+
+  async function explainProject(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    const folder = (editor && vscode.workspace.getWorkspaceFolder(editor.document.uri)) ?? vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      void vscode.window.showInformationMessage("Open a project folder first (File → Open Folder), then run “Nexus: Explain This Project”.");
+      return;
+    }
+    const graph = await projectGraphFor(folder);
+
+    // Where the user's selection is, if they have code open in this project.
+    let currentPath: string | undefined;
+    let selection: string | undefined;
+    let enclosing: string[] = [];
+    let analysis: SelectionAnalysis | undefined;
+    if (editor && vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.toString() === folder.uri.toString()) {
+      currentPath = vscode.workspace.asRelativePath(editor.document.uri, false);
+      analysis = analyzeSelection({
+        text: editor.document.getText(),
+        languageId: editor.document.languageId,
+        selectionStart: editor.document.offsetAt(editor.selection.start),
+        selectionEnd: editor.document.offsetAt(editor.selection.end),
+      });
+      if (analysis.focusIndex !== -1) {
+        selection = analysis.expressionText.length > 40 ? `${analysis.expressionText.slice(0, 39)}…` : analysis.expressionText;
+        const focus = analysis.context.tokens[analysis.focusIndex];
+        let index = enclosingDeclaration(analysis.context.declarations, focus.line);
+        while (index !== -1) {
+          const declaration = analysis.context.declarations[index];
+          if (declaration.line !== focus.line) {
+            enclosing.unshift(`${declaration.kind} ${declaration.name}`);
+          }
+          index = declaration.parent;
+        }
+      }
+    }
+
+    const overview = buildProjectOverview({ graph, projectName: folder.name, currentPath, selection, enclosing });
+    const aiEnabled = ai.isEnabled();
+    const version = panel.showProject(overview, aiEnabled, currentLevel());
+    lastAi = undefined;
+    if (aiEnabled) {
+      const request = await buildProjectAiRequest(folder, overview, editor, analysis, selection);
+      const projectFiles = graph.files.map((file) => ({ path: file.path, uri: file.uri }));
+      lastAi = { version, request, kind: "project", projectFiles };
+      await runProjectAi(version, request, projectFiles);
+    }
+  }
 
   async function runAiSummary(version: number, request: AiRequest): Promise<void> {
     aiCancellation?.cancel();
@@ -79,9 +139,16 @@ export function activate(context: vscode.ExtensionContext): void {
       void config().update("ai.explainLevel", level, vscode.ConfigurationTarget.Global);
       if (lastAi && lastAi.version === version) {
         const request = { ...lastAi.request, level };
-        lastAi = { version, request };
-        void runAiSummary(version, request);
+        lastAi = { ...lastAi, request };
+        if (lastAi.kind === "project") {
+          void runProjectAi(version, request, lastAi.projectFiles ?? []);
+        } else {
+          void runAiSummary(version, request);
+        }
       }
+    },
+    onExplainProject: () => {
+      void vscode.commands.executeCommand("nexus.explainProject");
     },
     onToggleFollow: () => {
       void config().update("followCursor", !config().get<boolean>("followCursor", false), vscode.ConfigurationTarget.Global);
@@ -254,6 +321,13 @@ export function activate(context: vscode.ExtensionContext): void {
     panel,
     vscode.commands.registerCommand("nexus.explain", explainCommand),
     vscode.commands.registerCommand("nexus.exploreCurrentSymbol", explainCommand),
+    vscode.commands.registerCommand("nexus.explainProject", () =>
+      vscode.window
+        .withProgress({ location: vscode.ProgressLocation.Window, title: "Nexus: mapping the project…" }, () => explainProject())
+        .then(undefined, (error: unknown) => {
+          void vscode.window.showErrorMessage(`Nexus could not explain this project: ${error instanceof Error ? error.message : String(error)}`);
+        }),
+    ),
     vscode.commands.registerCommand("nexus.toggleFollowCursor", () =>
       config().update("followCursor", !config().get<boolean>("followCursor", false), vscode.ConfigurationTarget.Global),
     ),
@@ -478,6 +552,82 @@ async function buildAiRequest(
       .map((claim) => richToPlain(claim.text))
       .concat(provider.projectMap ? describeMapForAi(provider.projectMap) : []),
     projectFiles: provider.projectMap?.files.map((file) => file.path),
+  };
+}
+
+/** Context for the whole-project AI explanation: README, starting files, core files, and the user's selection. */
+async function buildProjectAiRequest(
+  folder: vscode.WorkspaceFolder,
+  overview: ProjectOverview,
+  editor: vscode.TextEditor | undefined,
+  analysis: SelectionAnalysis | undefined,
+  selection: string | undefined,
+): Promise<AiRequest> {
+  const files: AiContextFile[] = [];
+  const addFile = async (uri: string, label: string, role: string, firstLine: number, count: number): Promise<void> => {
+    if (files.some((file) => file.uri === uri && file.firstLine === firstLine)) {
+      return;
+    }
+    try {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uri));
+      const end = Math.min(document.lineCount, firstLine + count);
+      files.push({ label, uri, firstLine, lines: document.getText(new vscode.Range(firstLine, 0, end, 0)).split(/\r?\n/), role });
+    } catch {
+      // Skip unreadable files.
+    }
+  };
+
+  for (const name of ["README.md", "readme.md", "README.rst", "README.txt", "README"]) {
+    try {
+      const readme = vscode.Uri.joinPath(folder.uri, name);
+      const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(readme));
+      files.push({ label: name, uri: readme.toString(), firstLine: 0, lines: text.split(/\r?\n/).slice(0, 80), role: "the project's README" });
+      break;
+    } catch {
+      // No README with this name.
+    }
+  }
+  for (const entry of overview.entryPoints.slice(0, 2)) {
+    await addFile(entry.uri, entry.path, "a file where the program starts", 0, 150);
+  }
+  const core = overview.layers.flat().filter((file) => file.role === "core").sort((a, b) => b.usedBy.length - a.usedBy.length);
+  for (const file of core.slice(0, 3)) {
+    await addFile(file.uri, file.path, "a core file many others import", 0, 70);
+  }
+  for (const file of (overview.layers[1] ?? []).slice(0, 3)) {
+    await addFile(file.uri, file.path, "a file the starting file uses", 0, 50);
+  }
+
+  let selectedCode = "";
+  let selectionLine = 0;
+  const label = editor ? displayPath(editor.document.uri) : "";
+  if (editor && analysis && analysis.focusIndex !== -1 && selection) {
+    selectedCode = analysis.expressionText.slice(0, 600);
+    selectionLine = analysis.context.lines.positionAt(analysis.context.tokens[analysis.focusIndex].start).line;
+    const start = Math.max(0, selectionLine - 40);
+    await addFile(editor.document.uri.toString(), label, "the file with the user's selection", start, 90);
+  }
+
+  const facts = [
+    `The project "${overview.projectName}" has ${overview.totalFiles} source files.`,
+    ...overview.entryPoints.map((entry) => `${entry.path} looks like a starting file: ${entry.entryReason ?? "no other file imports it"}.`),
+    ...overview.layers.flat().filter((file) => file.uses.length > 0).slice(0, 12).map((file) => `${file.path} imports ${file.uses.join(", ")}.`),
+  ];
+  if (overview.here && overview.here.pathFromEntry.length > 1) {
+    facts.push(`Import chain from a starting file to the user's file: ${overview.here.pathFromEntry.join(" -> ")}.`);
+  }
+
+  return {
+    languageLabel: overview.languages.map((language) => language.label).join(", ") || "code",
+    selectedCode: selectedCode || "(nothing selected: explain the whole project)",
+    selectionLabel: label || "(none)",
+    selectionLine,
+    files,
+    verifiedFacts: facts.slice(0, 20),
+    projectFiles: [...overview.layers.flat(), ...overview.tests, ...overview.unconnected].map((file) => file.path),
+    task: selectedCode
+      ? "Explain this whole project in simple terms, then explain exactly where the user's selected code fits into it (fill in selectionFit)."
+      : "Explain this whole project in simple terms. Nothing is selected, so set selectionFit to null.",
   };
 }
 
