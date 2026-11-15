@@ -5,7 +5,8 @@
  * and previewed outside the editor. All text is escaped; the only
  * script is the small, nonce-protected navigation/AI handler.
  */
-import { EXPLAIN_LEVELS, type AiPoint, type AiResult, type ExplainLevel } from "./aiPrompt";
+import { EXPLAIN_LEVELS, type AiPoint, type AiResult, type ExplainLevel, type ProjectAiResult } from "./aiPrompt";
+import type { OverviewFile, ProjectOverview } from "./analysis/projectOverview";
 import type { MapFile, ProjectMapView } from "./analysis/projectMap";
 import type {
   Basis,
@@ -297,6 +298,7 @@ function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evid
     <span class="pill">${escapeHtml(explanation.kindLabel)}</span>
     <span class="pill pill-quiet">${escapeHtml(explanation.languageLabel)}</span>
     <span class="spacer"></span>
+    <button type="button" class="toggle project-btn" data-command="explainProject" title="Explain the whole project and where this code fits in it">🗺️ Explain the whole project</button>
     <button type="button" class="toggle${options.followCursor ? " on" : ""}" data-command="toggleFollow" title="Update this panel automatically as you move the cursor">${options.followCursor ? "● Following cursor" : "○ Follow cursor"}</button>
   </div>
   <p class="headline">${rich(explanation.headline)}</p>
@@ -447,6 +449,134 @@ function flowchart(flow: Flow): string {
   return `<div class="fc fc-steps">${steps.map((row, index) => `${index > 0 ? `<div class="fc-down" aria-hidden="true">↓</div>` : ""}${box(row, `fc-${row.tone}`)}`).join("")}${notes}</div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Whole-project page
+// ---------------------------------------------------------------------------
+
+export interface ProjectRenderOptions {
+  readonly nonce: string;
+  readonly aiEnabled: boolean;
+  readonly explainLevel?: ExplainLevel;
+}
+
+const ROLE_BADGE: Readonly<Record<OverviewFile["role"], { label: string; cls: string }>> = {
+  entry: { label: "starts here", cls: "r-entry" },
+  core: { label: "core", cls: "r-core" },
+  helper: { label: "helper", cls: "r-helper" },
+  test: { label: "test", cls: "r-test" },
+  standalone: { label: "on its own", cls: "r-alone" },
+};
+
+function fileCard(file: OverviewFile): string {
+  const badge = ROLE_BADGE[file.role];
+  const name = file.path.split("/").pop() ?? file.path;
+  const folder = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
+  const defines = file.defines.length > 0 ? `<span class="pc-defs">${file.defines.slice(0, 4).map((name) => `<code>${escapeHtml(name)}</code>`).join(" ")}${file.defines.length > 4 ? ` +${file.defines.length - 4}` : ""}</span>` : "";
+  const uses = file.uses.length > 0 ? `<span class="pc-uses">uses ${escapeHtml(file.uses.slice(0, 3).map((path) => path.split("/").pop() ?? path).join(", "))}${file.uses.length > 3 ? "…" : ""}</span>` : "";
+  return `<button type="button" class="pcard ${badge.cls}${file.here ? " pc-here" : ""}" data-open-uri="${escapeHtml(file.uri)}" title="${escapeHtml(file.path)}${file.entryReason ? ` (${escapeHtml(file.entryReason)})` : ""}">
+  <span class="pc-top"><span class="pc-name">${file.here ? "★ " : ""}${escapeHtml(name)}</span><span class="pc-badge">${badge.label}</span></span>
+  ${folder ? `<span class="pc-folder">${escapeHtml(folder)}/</span>` : ""}${defines}${uses}
+</button>`;
+}
+
+export function renderProjectPanel(overview: ProjectOverview, options: ProjectRenderOptions): string {
+  const parts: string[] = [];
+  const langs = overview.languages.map((language) => `${language.count} ${escapeHtml(language.label)}`).join(" · ");
+
+  parts.push(`<header class="hero">
+  <div class="hero-top"><span class="pill">Whole project</span><span class="pill pill-quiet">${overview.totalFiles} source files${overview.limited ? "+" : ""}</span></div>
+  <p class="headline">🗺️ ${escapeHtml(overview.projectName)}</p>
+  <p class="muted small">${langs}</p>
+</header>`);
+
+  // You are here.
+  if (overview.here) {
+    const zoom = overview.here.zoom
+      .map((label, index) => `${index > 0 ? `<span class="zoom-arrow" aria-hidden="true">›</span>` : ""}<span class="zoom${index === overview.here!.zoom.length - 1 ? " zoom-selection" : ""}"><span class="zoom-label">${index >= overview.here!.zoom.length - (overview.here!.selection ? 1 : 0) ? `<code>${escapeHtml(label)}</code>` : escapeHtml(label)}</span></span>`)
+      .join("");
+    const chain = overview.here.pathFromEntry.length > 1
+      ? `<div class="chain">${overview.here.pathFromEntry.map((path, index) => `${index > 0 ? `<span class="chain-arrow">→ uses →</span>` : ""}<span class="chain-step${index === overview.here!.pathFromEntry.length - 1 ? " chain-here" : ""}">${escapeHtml(path.split("/").pop() ?? path)}</span>`).join("")}</div><p class="muted small">${tag("source")} How the program gets from where it starts to your file, following import statements.</p>`
+      : overview.here.pathFromEntry.length === 1
+        ? `<p>${tag("source")} Your file is one of the places the program starts.</p>`
+        : `<p class="muted">${tag("source")} No chain of imports leads from a starting file to yours. It may be run separately, loaded another way, or be a test or script.</p>`;
+    parts.push(section("here", "📍", "Where your selection fits", `<div class="zoomrow">${zoom}</div>${chain}<div id="fit-body"></div>`, "card-here"));
+  }
+
+  // AI explanation of the whole project.
+  parts.push(section("project-ai", "✨", "What this project is and how it works", `${options.aiEnabled ? levelPicker(options.explainLevel) : ""}<div id="ai-body">${renderProjectAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
+
+  // Diagram: layers from the starting files outwards.
+  if (overview.layers.length > 0) {
+    const columns = overview.layers
+      .map((layer, index) => `${index > 0 ? `<div class="layer-arrow" aria-hidden="true">→</div>` : ""}<div class="layer"><div class="map-col-title">${index === 0 ? "Starts here" : index === 1 ? "Used directly" : `${index} steps away`}</div>${layer.map(fileCard).join("")}</div>`)
+      .join("");
+    parts.push(section("diagram", "🧩", "How the files connect", `<div class="layers">${columns}</div><p class="muted small">${tag("source")} Each column is one step further from where the program starts. Arrows mean "imports". Click a file to open it.</p>`));
+  } else {
+    parts.push(section("diagram", "🧩", "How the files connect", `<p class="muted">Nexus could not find a starting file or any imports between project files, so it can't draw how they connect.</p>`));
+  }
+
+  const extras: string[] = [];
+  if (overview.tests.length > 0) {
+    extras.push(`<h3>Tests (${overview.tests.length})</h3><div class="pgrid">${overview.tests.slice(0, 12).map(fileCard).join("")}</div>`);
+  }
+  if (overview.unconnected.length > 0) {
+    extras.push(`<h3>Not connected to the main flow (${overview.unconnected.length})</h3><p class="muted small">Scripts, config, or code loaded in ways imports don't show.</p><div class="pgrid">${overview.unconnected.slice(0, 16).map(fileCard).join("")}</div>`);
+  }
+  if (extras.length > 0) {
+    parts.push(section("other", "📦", "Everything else", extras.join("")));
+  }
+
+  // Reading tour.
+  if (overview.tour.length > 0) {
+    parts.push(section("tour", "🧭", "Read the project in this order", `<ol class="tour">${overview.tour
+      .map((stop) => `<li><button type="button" class="pfile" data-open-uri="${escapeHtml(stop.uri)}">${escapeHtml(stop.path)}</button><span class="muted small">${escapeHtml(stop.why).replace(/`([^`]+)`/g, "<code>$1</code>")}</span></li>`)
+      .join("")}</ol><p class="muted small">Tip: open a file, click on a function in it, and press the 💡 Nexus button to dig in.</p>`));
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${options.nonce}'; script-src 'nonce-${options.nonce}';" />
+<title>Nexus: project</title>
+<style nonce="${options.nonce}">${STYLES}</style>
+</head>
+<body>
+<main>
+${parts.join("\n")}
+</main>
+<script nonce="${options.nonce}">${SCRIPT}</script>
+</body>
+</html>`;
+}
+
+export function renderProjectAiResult(result: ProjectAiResult | undefined, enabled: boolean): string {
+  if (!enabled) {
+    return `<p class="muted">Want a plain-language explanation of what this whole project does? Turn on <button type="button" class="link" data-command="enableAi">AI</button>. It only reads files in this workspace, never the web.</p>`;
+  }
+  if (!result) {
+    return `<div class="ai-loading"><span class="spinner" aria-hidden="true"></span>Reading the project…</div>`;
+  }
+  if (result.status !== "ok") {
+    return `<p class="muted">${escapeHtml(result.message)}</p>`;
+  }
+  const cites = (point: AiPoint): string =>
+    point.citations.length > 0
+      ? `<span class="jumps">${point.citations.map((cite) => `<button type="button" class="jump" data-ai-cite="${escapeHtml(cite.uri)}|${cite.line}" title="${escapeHtml(cite.excerpt)}">${escapeHtml(cite.label.trim())}:${cite.line + 1}</button>`).join("")}</span>`
+      : `<span class="muted small">(no line cited)</span>`;
+  const steps = (list: readonly AiPoint[]): string =>
+    `<div class="ai-flow">${list.map((step, index) => `${index > 0 ? `<div class="fc-down" aria-hidden="true">↓</div>` : ""}<div class="ai-step"><span class="ai-step-num">${index + 1}</span><div class="ai-step-body"><span>${escapeHtml(step.text)}</span>${cites(step)}</div></div>`).join("")}</div>`;
+
+  return `<p class="ai-summary">${escapeHtml(result.summary)}</p>
+${result.purpose ? `<div class="ai-role"><span class="whatif-kicker">the problem it solves</span><span>${escapeHtml(result.purpose)}</span></div>` : ""}
+${result.selectionFit ? `<div class="fit-box"><span class="whatif-kicker">📍 where your selection fits</span><p>${escapeHtml(result.selectionFit.text)}</p>${result.selectionFit.steps.length > 0 ? steps(result.selectionFit.steps) : ""}</div>` : ""}
+${result.howItWorks.length > 0 ? `<h3>How it works, step by step</h3>${steps(result.howItWorks)}` : ""}
+${result.parts.length > 0 ? `<h3>The main parts</h3><div class="parts">${result.parts.map((part) => `<button type="button" class="part" ${part.uri ? `data-open-uri="${escapeHtml(part.uri)}"` : ""}><code>${escapeHtml(part.path)}</code><span>${escapeHtml(part.role)}</span></button>`).join("")}</div>` : ""}
+${result.startHere ? `<p class="start-here">👉 ${escapeHtml(result.startHere)}</p>` : ""}
+<p class="muted small">Written by ${escapeHtml(result.model)} using only files from this workspace (${escapeHtml(result.filesSent.map((file) => file.trim()).filter((file, index, all) => all.indexOf(file) === index).slice(0, 8).join(", "))}${result.filesSent.length > 8 ? ", …" : ""}). AI can be wrong. Check the cited lines.${result.droppedCitations > 0 ? ` ${result.droppedCitations} citation${result.droppedCitations === 1 ? " was" : "s were"} removed because ${result.droppedCitations === 1 ? "it did" : "they did"} not match the code that was sent.` : ""}</p>`;
+}
+
 const STYLES = `
 :root{color-scheme:light dark;--fg:var(--vscode-foreground);--muted:var(--vscode-descriptionForeground);--bg:var(--vscode-editor-background);--card:var(--vscode-sideBar-background,var(--bg));--border:var(--vscode-panel-border,rgba(128,128,128,.3));--accent:var(--vscode-textLink-foreground);--focus:var(--vscode-focusBorder);
 --c-name:#4f9cf9;--c-member:#b184f5;--c-keyword:#f08a5d;--c-text:#52c47a;--c-number:#e3b341;--c-access:#8b949e;--c-call:#e06c9f;--c-operator:#56c2c2;
@@ -555,6 +685,40 @@ summary{cursor:pointer;font-weight:600;padding:2px 0}
 .evidence-excerpt{grid-column:1/-1;white-space:pre-wrap}
 pre.doc{white-space:pre-wrap;font-family:var(--vscode-editor-font-family);font-size:.9em;background:var(--vscode-textCodeBlock-background,rgba(128,128,128,.12));padding:10px;border-radius:6px;max-height:260px;overflow:auto}
 .empty h1{font-size:1.1em}
+.project-btn{color:var(--fg);border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
+.card-here{border-left:4px solid var(--accent)}
+.chain{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:6px 0}
+.chain-step{border:1px solid var(--border);border-radius:8px;padding:3px 10px;background:var(--bg);font-family:var(--vscode-editor-font-family);font-size:.9em}
+.chain-here{border:2px solid var(--accent);font-weight:700}
+.chain-arrow{font-size:.75em;color:var(--muted)}
+.layers{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;align-items:flex-start}
+.layer{display:flex;flex-direction:column;gap:6px;min-width:170px;max-width:220px}
+.layer-arrow{align-self:center;font-size:1.5em;color:var(--muted);padding-top:20px}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px}
+.pcard{font:inherit;text-align:left;display:flex;flex-direction:column;gap:3px;border:1px solid var(--border);border-left-width:4px;border-radius:9px;padding:7px 9px;background:var(--bg);color:var(--fg);cursor:pointer;min-width:0}
+.pcard:hover{border-color:var(--focus)}
+.pc-top{display:flex;justify-content:space-between;gap:6px;align-items:baseline}
+.pc-name{font-weight:700;overflow-wrap:anywhere}
+.pc-badge{font-size:.65em;text-transform:uppercase;letter-spacing:.05em;font-weight:800;color:var(--muted);white-space:nowrap}
+.pc-folder,.pc-uses{font-size:.75em;color:var(--muted);overflow-wrap:anywhere}
+.pc-defs{font-size:.78em;display:flex;flex-wrap:wrap;gap:3px}
+.pc-defs code{font-size:.92em}
+.r-entry{border-left-color:var(--c-keyword)}.r-entry .pc-badge{color:var(--c-keyword)}
+.r-core{border-left-color:var(--b-source)}.r-core .pc-badge{color:var(--b-source)}
+.r-helper{border-left-color:var(--b-provider)}
+.r-test{border-left-color:var(--b-language)}
+.r-alone{border-left-color:var(--border);opacity:.85}
+.pc-here{box-shadow:0 0 0 2px var(--accent)}
+.tour{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:6px}
+.tour li{display:flex;flex-direction:column;gap:2px}
+.tour .pfile{align-self:flex-start}
+.fit-box{border:2px solid var(--accent);border-radius:10px;padding:10px 12px;margin:8px 0 12px;background:color-mix(in srgb,var(--accent) 8%,var(--bg))}
+.fit-box p{margin:4px 0 8px}
+.parts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}
+.part{font:inherit;text-align:left;display:flex;flex-direction:column;gap:3px;border:1px solid var(--border);border-radius:9px;padding:8px 10px;background:var(--bg);color:var(--fg);cursor:pointer}
+.part:hover{border-color:var(--focus)}
+.start-here{font-weight:600;margin:12px 0 6px}
+
 .levels{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 12px}
 .levels-label{font-size:.82em;color:var(--muted);margin-right:2px}
 .level{font:inherit;font-size:.85em;border:1px solid var(--border);border-radius:999px;padding:3px 11px;background:transparent;color:var(--fg);cursor:pointer}

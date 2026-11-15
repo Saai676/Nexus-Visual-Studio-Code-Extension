@@ -1,13 +1,15 @@
 import { randomBytes } from "crypto";
 import * as vscode from "vscode";
-import { EXPLAIN_LEVELS, type AiResult, type ExplainLevel } from "./aiPrompt";
+import { EXPLAIN_LEVELS, type AiResult, type ExplainLevel, type ProjectAiResult } from "./aiPrompt";
 import type { Evidence, Explanation } from "./analysis/explanationModel";
-import { renderAiResult, renderPanel } from "./panelHtml";
+import { renderAiResult, renderPanel, renderProjectAiResult, renderProjectPanel } from "./panelHtml";
+import type { ProjectOverview } from "./analysis/projectOverview";
 
 export interface PanelCallbacks {
   readonly onEnableAi: () => void;
   readonly onToggleFollow: () => void;
   readonly onSetLevel: (level: ExplainLevel, version: number) => void;
+  readonly onExplainProject: () => void;
 }
 
 interface PanelMessage {
@@ -63,6 +65,45 @@ export class InvestigationPanel implements vscode.Disposable {
       panel.reveal(vscode.ViewColumn.Beside, preserveFocus);
     }
     return this.renderVersion;
+  }
+
+  /** Shows the whole-project page and returns its version number. */
+  showProject(overview: ProjectOverview, aiEnabled: boolean, explainLevel: ExplainLevel): number {
+    const panel = this.getOrCreatePanel(false);
+    this.renderVersion += 1;
+    this.evidenceById = new Map();
+    this.aiCitations.clear();
+    this.openableFiles = new Set([
+      ...overview.layers.flat().map((file) => file.uri),
+      ...overview.tests.map((file) => file.uri),
+      ...overview.unconnected.map((file) => file.uri),
+      ...overview.tour.map((stop) => stop.uri),
+    ]);
+    panel.title = `Nexus: ${overview.projectName}`;
+    panel.webview.html = renderProjectPanel(overview, { nonce: randomBytes(16).toString("base64"), aiEnabled, explainLevel });
+    if (!panel.visible) {
+      panel.reveal(vscode.ViewColumn.Beside, false);
+    }
+    return this.renderVersion;
+  }
+
+  showProjectAiResult(version: number, result: ProjectAiResult, enabled: boolean): void {
+    if (!this.panel || version !== this.renderVersion) {
+      return;
+    }
+    if (result.status === "ok") {
+      for (const point of [...result.howItWorks, ...(result.selectionFit?.steps ?? [])]) {
+        for (const cite of point.citations) {
+          this.aiCitations.add(`${cite.uri}|${cite.line}`);
+        }
+      }
+      for (const part of result.parts) {
+        if (part.uri) {
+          this.openableFiles.add(part.uri);
+        }
+      }
+    }
+    void this.panel.webview.postMessage({ command: "aiResult", html: renderProjectAiResult(result, enabled) });
   }
 
   showAiResult(version: number, result: AiResult, enabled: boolean): void {
@@ -135,6 +176,9 @@ export class InvestigationPanel implements vscode.Disposable {
           await openLocation(raw.uri, 0, 0, 0, 0);
         }
         return;
+      case "explainProject":
+        this.callbacks.onExplainProject();
+        return;
       case "setLevel":
         if (raw.level && EXPLAIN_LEVELS.some((entry) => entry.id === raw.level)) {
           this.callbacks.onSetLevel(raw.level as ExplainLevel, this.renderVersion);
@@ -170,7 +214,7 @@ function isPanelMessage(message: unknown): message is PanelMessage {
     return false;
   }
   const candidate = message as Record<string, unknown>;
-  const allowed = ["navigate", "navigateAi", "openFile", "setLevel", "enableAi", "toggleFollow"];
+  const allowed = ["navigate", "navigateAi", "openFile", "setLevel", "explainProject", "enableAi", "toggleFollow"];
   return (
     typeof candidate.command === "string" &&
     allowed.includes(candidate.command) &&

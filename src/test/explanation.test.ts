@@ -9,7 +9,7 @@ import { findImportsOf, summarizeDeclarationAt } from "../analysis/crossFile";
 import { buildExplanation } from "../analysis/explanation";
 import { richToPlain, type Explanation } from "../analysis/explanationModel";
 import { analyzeSelection } from "../analysis/selection";
-import { renderPanel } from "../panelHtml";
+import { renderPanel, renderProjectPanel } from "../panelHtml";
 
 const FINANCE = `import streamlit as st
 
@@ -284,4 +284,63 @@ test("AI reading levels: the prompt asks for the chosen level and the panel show
   assert.ok(html.includes('data-level="five"') && /class="level on" data-level="middle"/.test(html));
   const off = renderPanel(explain(FINANCE, "python", "st.title"), { nonce: "n", cspSource: "x", displayPath: "main.py", aiEnabled: false, followCursor: false });
   assert.ok(!off.includes("data-level="));
+});
+
+const SAMPLE_PROJECT = [
+  ["main.py", `import streamlit as st\nfrom extract.parser import parse_article\nfrom extract.figures import find_figures\n\nst.title("Financial Data Extraction Tool")\ntext = st.text_area("Paste article")\nif st.button("Extract"):\n    figures = find_figures(parse_article(text))\n    st.table(figures)\n`],
+  ["extract/__init__.py", ""],
+  ["extract/parser.py", `from extract.clean import normalize\n\ndef parse_article(raw):\n    return [normalize(s) for s in raw.split(".")]\n`],
+  ["extract/figures.py", `import re\nfrom extract.parser import parse_article\n\ndef find_figures(sentences):\n    return [s for s in sentences if re.search(r"\\d", s)]\n`],
+  ["extract/clean.py", `def normalize(s):\n    return s.strip().lower()\n`],
+  ["tests/test_parser.py", `from extract.parser import parse_article\n\ndef test_parse():\n    assert parse_article("A. B") == ["a", "b"]\n`],
+  ["scripts/download.py", `import requests\n\nif __name__ == "__main__":\n    print("hi")\n`],
+].map(([path, text]) => ({ path, uri: `file:///p/${path}`, languageId: "python", text }));
+
+test("project overview: finds where the program starts, layers the files and plans a reading tour", async () => {
+  const { buildProjectGraph } = await import("../analysis/projectMap");
+  const { buildProjectOverview } = await import("../analysis/projectOverview");
+  const graph = buildProjectGraph(SAMPLE_PROJECT, false);
+  const overview = buildProjectOverview({ graph, projectName: "finance-app", currentPath: "extract/clean.py", selection: "normalize", enclosing: ["function normalize"] });
+
+  assert.deepEqual(overview.entryPoints.map((file) => file.path).sort(), ["main.py", "scripts/download.py"]);
+  assert.match(overview.entryPoints.find((file) => file.path === "main.py")?.entryReason ?? "", /Streamlit/);
+  assert.deepEqual(overview.layers.map((layer) => layer.map((file) => file.path).sort()), [["main.py", "scripts/download.py"], ["extract/figures.py", "extract/parser.py"], ["extract/clean.py"]]);
+  assert.equal(overview.layers[1].find((file) => file.path === "extract/parser.py")?.role, "core");
+  assert.deepEqual(overview.tests.map((file) => file.path), ["tests/test_parser.py"]);
+  assert.equal(overview.tour[0].path === "main.py" || overview.tour[0].path === "scripts/download.py", true);
+  assert.deepEqual(overview.here?.pathFromEntry, ["main.py", "extract/parser.py", "extract/clean.py"]);
+  assert.deepEqual(overview.here?.zoom, ["finance-app", "extract", "clean.py", "function normalize", "normalize"]);
+
+  const html = renderProjectPanel(overview, { nonce: "n", aiEnabled: true, explainLevel: "middle" });
+  for (const heading of ["Where your selection fits", "How the files connect", "Read the project in this order", "What this project is and how it works"]) {
+    assert.ok(html.includes(heading), heading);
+  }
+  assert.ok(html.includes("pc-here") && html.includes('data-level="middle"'));
+});
+
+test("project AI answer: parts must be real files and citations must match lines sent", async () => {
+  const { buildPrompt: build, parseProjectAnswer } = await import("../aiPrompt");
+  const { sentLines, filesSent, prompt } = build({
+    languageLabel: "Python", selectedCode: "normalize", selectionLabel: "extract/clean.py", selectionLine: 0,
+    files: [{ label: "main.py", uri: "file:///p/main.py", firstLine: 0, lines: SAMPLE_PROJECT[0].text.split("\n"), role: "start" }],
+    verifiedFacts: [], level: "five", task: "Explain this whole project in simple terms.",
+  });
+  assert.match(prompt, /Explain this whole project in simple terms\./);
+  const answer = JSON.stringify({
+    summary: "This app finds numbers in news articles.",
+    purpose: "Pulling financial figures out of articles.",
+    howItWorks: [{ text: "You paste an article", cite: [{ file: "main.py", line: 6 }] }, { text: "Made up", cite: [{ file: "main.py", line: 99 }] }],
+    parts: [{ file: "extract/parser.py", role: "Splits text into sentences" }, { file: "not/real.py", role: "nope" }],
+    selectionFit: { text: "normalize cleans each sentence.", steps: [{ text: "main.py calls parse_article", cite: [{ file: "main.py", line: 8 }] }] },
+    startHere: "Read main.py first.",
+  });
+  const files = SAMPLE_PROJECT.map((file) => ({ path: file.path, uri: file.uri }));
+  const result = parseProjectAnswer(answer, "m", sentLines, filesSent, files);
+  assert.equal(result.status, "ok");
+  if (result.status === "ok") {
+    assert.deepEqual(result.parts.map((part) => part.path), ["extract/parser.py"]);
+    assert.equal(result.howItWorks[0].citations[0].line, 5);
+    assert.equal(result.droppedCitations, 1);
+    assert.equal(result.selectionFit?.steps[0].citations.length, 1);
+  }
 });

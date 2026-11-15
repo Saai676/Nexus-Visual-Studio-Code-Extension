@@ -2,7 +2,7 @@
   "name": "nexus",
   "displayName": "Nexus",
   "description": "Understand unfamiliar code: plain-English, visual, evidence-backed explanations of whatever you select.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "engines": {
     "vscode": "^1.113.0"
@@ -21,6 +21,12 @@
         "title": "Explain This Code",
         "category": "Nexus",
         "icon": "$(lightbulb)"
+      },
+      {
+        "command": "nexus.explainProject",
+        "title": "Explain This Project",
+        "category": "Nexus",
+        "icon": "$(map)"
       },
       {
         "command": "nexus.exploreCurrentSymbol",
@@ -51,12 +57,24 @@
           "command": "nexus.explain",
           "group": "navigation",
           "when": "editorTextFocus || activeEditor"
+        },
+        {
+          "command": "nexus.explainProject",
+          "group": "navigation",
+          "when": "workspaceFolderCount > 0"
         }
       ],
       "commandPalette": [
         {
           "command": "nexus.exploreCurrentSymbol",
           "when": "false"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "nexus.explainProject",
+          "group": "navigation@9",
+          "when": "explorerResourceIsFolder"
         }
       ]
     },
@@ -66,6 +84,11 @@
         "key": "ctrl+alt+e",
         "mac": "cmd+alt+e",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "nexus.explainProject",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p"
       }
     ],
     "configuration": {

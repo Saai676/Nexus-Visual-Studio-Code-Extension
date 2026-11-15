@@ -18,9 +18,9 @@
  */
 import * as vscode from "vscode";
 
-import { buildPrompt, parseAnswer, SYSTEM_PROMPT, type AiRequest, type AiResult } from "./aiPrompt";
+import { buildPrompt, parseAnswer, parseProjectAnswer, PROJECT_SYSTEM_PROMPT, SYSTEM_PROMPT, type AiRequest, type AiResult, type ProjectAiResult } from "./aiPrompt";
 
-export type { AiContextFile, AiRequest, AiResult } from "./aiPrompt";
+export type { AiContextFile, AiRequest, AiResult, ProjectAiResult } from "./aiPrompt";
 
 const CONSENT_KEY = "nexus.ai.consentGiven";
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -60,6 +60,35 @@ export class AiSummarizer {
     }
   }
 
+  /** Explains the whole project. Same setting, trust and consent checks as summarize(). */
+  async summarizeProject(
+    request: AiRequest,
+    projectFiles: readonly { readonly path: string; readonly uri: string }[],
+    token: vscode.CancellationToken,
+  ): Promise<ProjectAiResult> {
+    if (!this.isEnabled()) {
+      return { status: "disabled", message: "AI is off. Turn on the setting “Nexus › AI: Enabled” to use it." };
+    }
+    if (!vscode.workspace.isTrusted) {
+      return { status: "disabled", message: "AI is disabled in untrusted workspaces." };
+    }
+    if (!(await this.ensureConsent())) {
+      return { status: "declined", message: "Skipped: permission to send code was not given." };
+    }
+    const { prompt, sentLines, filesSent } = buildPrompt(request);
+    const provider = vscode.workspace.getConfiguration("nexus").get<string>("ai.provider", "vscode");
+    try {
+      const { text, model } =
+        provider === "gemini" ? await this.askGemini(prompt, token, PROJECT_SYSTEM_PROMPT) : await this.askVscodeModel(prompt, token, PROJECT_SYSTEM_PROMPT);
+      return parseProjectAnswer(text, model, sentLines, filesSent, projectFiles);
+    } catch (error) {
+      if (error instanceof UnavailableError) {
+        return { status: "unavailable", message: error.message };
+      }
+      return { status: "failed", message: `The AI request failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
   private async ensureConsent(): Promise<boolean> {
     if (this.context.globalState.get<boolean>(CONSENT_KEY)) {
       return true;
@@ -77,7 +106,7 @@ export class AiSummarizer {
     return false;
   }
 
-  private async askVscodeModel(prompt: string, token: vscode.CancellationToken): Promise<{ text: string; model: string }> {
+  private async askVscodeModel(prompt: string, token: vscode.CancellationToken, systemPrompt = SYSTEM_PROMPT): Promise<{ text: string; model: string }> {
     if (!("lm" in vscode) || typeof vscode.lm?.selectChatModels !== "function") {
       throw new UnavailableError("This version of VS Code does not offer language model access.");
     }
@@ -91,7 +120,7 @@ export class AiSummarizer {
     }
 
     // System rules go in the first user message: the VS Code API has no separate system role.
-    const messages = [vscode.LanguageModelChatMessage.User(`${SYSTEM_PROMPT}\n\n${prompt}`)];
+    const messages = [vscode.LanguageModelChatMessage.User(`${systemPrompt}\n\n${prompt}`)];
     const response = await withTimeout(model.sendRequest(messages, { justification: "Nexus explains the selected code using files from this workspace." }, token));
     let text = "";
     for await (const fragment of response.text) {
@@ -103,7 +132,7 @@ export class AiSummarizer {
     return { text, model: model.name || model.family || model.id };
   }
 
-  private async askGemini(prompt: string, token: vscode.CancellationToken): Promise<{ text: string; model: string }> {
+  private async askGemini(prompt: string, token: vscode.CancellationToken, systemPrompt = SYSTEM_PROMPT): Promise<{ text: string; model: string }> {
     const apiKey = await this.context.secrets.get("nexus.geminiApiKey");
     if (!apiKey) {
       throw new UnavailableError("No Gemini API key is stored. Run “Nexus: Set Gemini API Key” first.");
@@ -121,7 +150,7 @@ export class AiSummarizer {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            systemInstruction: { parts: [{ text: systemPrompt }] },
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             generationConfig: { temperature: 0.2, responseMimeType: "application/json" },
           }),
