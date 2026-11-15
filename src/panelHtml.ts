@@ -5,7 +5,7 @@
  * and previewed outside the editor. All text is escaped; the only
  * script is the small, nonce-protected navigation/AI handler.
  */
-import type { AiPoint, AiResult } from "./aiPrompt";
+import { EXPLAIN_LEVELS, type AiPoint, type AiResult, type ExplainLevel } from "./aiPrompt";
 import type { MapFile, ProjectMapView } from "./analysis/projectMap";
 import type {
   Basis,
@@ -26,6 +26,15 @@ export interface PanelRenderOptions {
   readonly displayPath: string;
   readonly aiEnabled: boolean;
   readonly followCursor: boolean;
+  /** Reading level for the AI explanation. */
+  readonly explainLevel?: ExplainLevel;
+}
+
+function levelPicker(current: ExplainLevel | undefined): string {
+  const active = current ?? "beginner";
+  return `<div class="levels" role="radiogroup" aria-label="Explain like I'm"><span class="levels-label">Explain like I'm:</span>${EXPLAIN_LEVELS
+    .map((level) => `<button type="button" role="radio" aria-checked="${level.id === active}" class="level${level.id === active ? " on" : ""}" data-level="${level.id}">${level.icon} ${escapeHtml(level.label)}</button>`)
+    .join("")}</div>`;
 }
 
 const BASIS_LABEL: Readonly<Record<Basis, string>> = {
@@ -295,7 +304,7 @@ function renderBody(explanation: Explanation, evidence: ReadonlyMap<string, Evid
 </header>`);
 
   // 1b. AI summary (optional): the thorough plain-English explanation.
-  parts.push(section("ai", "✨", "How this fits into your project", `<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
+  parts.push(section("ai", "✨", "How this fits into your project", `${options.aiEnabled ? levelPicker(options.explainLevel) : ""}<div id="ai-body">${renderAiResult(undefined, options.aiEnabled)}</div>`, "card-ai"));
 
   // 2. Read it left to right.
   if (explanation.steps.length > 1) {
@@ -546,6 +555,11 @@ summary{cursor:pointer;font-weight:600;padding:2px 0}
 .evidence-excerpt{grid-column:1/-1;white-space:pre-wrap}
 pre.doc{white-space:pre-wrap;font-family:var(--vscode-editor-font-family);font-size:.9em;background:var(--vscode-textCodeBlock-background,rgba(128,128,128,.12));padding:10px;border-radius:6px;max-height:260px;overflow:auto}
 .empty h1{font-size:1.1em}
+.levels{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 12px}
+.levels-label{font-size:.82em;color:var(--muted);margin-right:2px}
+.level{font:inherit;font-size:.85em;border:1px solid var(--border);border-radius:999px;padding:3px 11px;background:transparent;color:var(--fg);cursor:pointer}
+.level:hover{border-color:var(--focus)}
+.level.on{background:color-mix(in srgb,var(--b-ai) 26%,transparent);border-color:var(--b-ai);font-weight:600}
 .ai-role{display:flex;flex-direction:column;gap:3px;border-left:3px solid var(--b-ai);padding:4px 10px;margin:4px 0 10px}
 .ai-ios{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:8px 0}
 .ai-io{border-radius:9px;padding:8px 11px;display:flex;flex-direction:column;gap:3px;border:1px solid var(--border);background:var(--bg)}
@@ -642,8 +656,15 @@ details.words>summary,details.unknown-box>summary,.card-quiet details>summary{di
 const SCRIPT = `
 const vscode = acquireVsCodeApi();
 document.addEventListener("click", (event) => {
-  const target = event.target instanceof Element ? event.target.closest("[data-evidence-id],[data-ai-cite],[data-command],[data-legend],[data-open-uri]") : null;
+  const target = event.target instanceof Element ? event.target.closest("[data-evidence-id],[data-ai-cite],[data-command],[data-legend],[data-open-uri],[data-level]") : null;
   if (!target) { return; }
+  if (target.dataset.level) {
+    document.querySelectorAll(".level").forEach((button) => { const on = button === target; button.classList.toggle("on", on); button.setAttribute("aria-checked", String(on)); });
+    const body = document.getElementById("ai-body");
+    if (body) { body.innerHTML = '<div class="ai-loading"><span class="spinner" aria-hidden="true"></span>Re-explaining for this level…</div>'; }
+    vscode.postMessage({ command: "setLevel", level: target.dataset.level });
+    return;
+  }
   if (target.dataset.openUri) { vscode.postMessage({ command: "openFile", uri: target.dataset.openUri }); return; }
   if (target.dataset.evidenceId) { vscode.postMessage({ command: "navigate", evidenceId: target.dataset.evidenceId }); return; }
   if (target.dataset.aiCite) { vscode.postMessage({ command: "navigateAi", cite: target.dataset.aiCite }); return; }

@@ -30,6 +30,10 @@ Visual first, words second:
 
 Evidence tags: **seen in file** (read in source), **language server** (reported by VS Code), **language rule** (general language knowledge), **name match** (same spelling only, not proof), **AI**.
 
+### Explain like I'm…
+
+The AI explanation has a reading-level picker: **🧸 5-year-old**, **🎒 Middle schooler**, **🌱 Beginner coder** (default) and **💻 Developer**. Click one to re-explain the same code at that level; your choice is saved in the `nexus.ai.explainLevel` setting. Only the wording changes. The AI still has to cite real lines and stays inside the workspace.
+
 ## Languages
 
 - **Detailed:** Python, JavaScript, TypeScript (incl. JSX/TSX)
