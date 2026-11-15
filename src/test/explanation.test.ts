@@ -271,3 +271,17 @@ test("AI answers: thorough fields (flow steps, inputs, outputs, dependents) are 
     assert.equal(result.outputs, "The page the user sees");
   }
 });
+
+test("AI reading levels: the prompt asks for the chosen level and the panel shows the picker", async () => {
+  const { buildPrompt: build, EXPLAIN_LEVELS } = await import("../aiPrompt");
+  const base = { languageLabel: "Python", selectedCode: "st", selectionLabel: "main.py", selectionLine: 0, files: [], verifiedFacts: [] };
+  assert.match(build({ ...base, level: "five" }).prompt, /talking to a 5-year-old/);
+  assert.match(build({ ...base, level: "middle" }).prompt, /middle-school student/);
+  assert.match(build(base).prompt, /someone who is learning to program/);
+  assert.equal(EXPLAIN_LEVELS.length, 4);
+
+  const html = renderPanel(explain(FINANCE, "python", "st.title"), { nonce: "n", cspSource: "x", displayPath: "main.py", aiEnabled: true, followCursor: false, explainLevel: "middle" });
+  assert.ok(html.includes('data-level="five"') && /class="level on" data-level="middle"/.test(html));
+  const off = renderPanel(explain(FINANCE, "python", "st.title"), { nonce: "n", cspSource: "x", displayPath: "main.py", aiEnabled: false, followCursor: false });
+  assert.ok(!off.includes("data-level="));
+});

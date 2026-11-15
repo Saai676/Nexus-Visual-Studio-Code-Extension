@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { AiSummarizer, type AiContextFile, type AiRequest } from "./aiSummary";
+import { EXPLAIN_LEVELS, type ExplainLevel } from "./aiPrompt";
 import { summarizeDeclarationAt } from "./analysis/crossFile";
 import { buildMapView, buildProjectGraph, describeMapForAi, type ProjectFile, type ProjectGraph, type ProjectMapView } from "./analysis/projectMap";
 import {
@@ -44,6 +45,23 @@ export function activate(context: vscode.ExtensionContext): void {
   let aiCancellation: vscode.CancellationTokenSource | undefined;
   let followTimer: NodeJS.Timeout | undefined;
   let running = 0;
+  /** The AI request behind the current panel, so the reading level can be changed without re-running everything. */
+  let lastAi: { version: number; request: AiRequest } | undefined;
+  const currentLevel = (): ExplainLevel => {
+    const value = config().get<string>("ai.explainLevel", "beginner");
+    return EXPLAIN_LEVELS.some((entry) => entry.id === value) ? (value as ExplainLevel) : "beginner";
+  };
+
+  async function runAiSummary(version: number, request: AiRequest): Promise<void> {
+    aiCancellation?.cancel();
+    aiCancellation?.dispose();
+    const source = new vscode.CancellationTokenSource();
+    aiCancellation = source;
+    const result = await ai.summarize(request, source.token);
+    if (!source.token.isCancellationRequested) {
+      panel.showAiResult(version, result, true);
+    }
+  }
 
   const config = (): vscode.WorkspaceConfiguration => vscode.workspace.getConfiguration("nexus");
 
@@ -56,6 +74,14 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         });
       });
+    },
+    onSetLevel: (level, version) => {
+      void config().update("ai.explainLevel", level, vscode.ConfigurationTarget.Global);
+      if (lastAi && lastAi.version === version) {
+        const request = { ...lastAi.request, level };
+        lastAi = { version, request };
+        void runAiSummary(version, request);
+      }
     },
     onToggleFollow: () => {
       void config().update("followCursor", !config().get<boolean>("followCursor", false), vscode.ConfigurationTarget.Global);
@@ -81,20 +107,17 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const explanation = buildExplanation(analysis, uri, provider);
     const aiEnabled = ai.isEnabled();
-    const version = panel.show(explanation, displayPath(document.uri), aiEnabled, config().get<boolean>("followCursor", false), mode === "follow");
+    const version = panel.show(explanation, displayPath(document.uri), aiEnabled, config().get<boolean>("followCursor", false), mode === "follow", currentLevel());
     writeOutput(output, explanation, document.uri);
 
     aiCancellation?.cancel();
     aiCancellation?.dispose();
     aiCancellation = undefined;
+    lastAi = undefined;
     if (aiEnabled && explanation.hasContent && mode === "command") {
-      const source = new vscode.CancellationTokenSource();
-      aiCancellation = source;
-      const request = await buildAiRequest(document, analysis, explanation, provider);
-      const result = await ai.summarize(request, source.token);
-      if (!source.token.isCancellationRequested) {
-        panel.showAiResult(version, result, aiEnabled);
-      }
+      const request = { ...(await buildAiRequest(document, analysis, explanation, provider)), level: currentLevel() };
+      lastAi = { version, request };
+      await runAiSummary(version, request);
     } else if (aiEnabled && mode === "follow") {
       panel.showAiResult(version, { status: "disabled", message: "AI summaries run when you use the Explain command, not while following the cursor." }, aiEnabled);
     }

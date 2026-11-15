@@ -2,7 +2,7 @@
   "name": "nexus",
   "displayName": "Nexus",
   "description": "Understand unfamiliar code: plain-English, visual, evidence-backed explanations of whatever you select.",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "private": true,
   "engines": {
     "vscode": "^1.113.0"
@@ -90,7 +90,7 @@
           "default": "vscode",
           "enumDescriptions": [
             "Use a model available in VS Code (for example GitHub Copilot). No key needed.",
-            "Use Google Gemini with your own key (run “Nexus: Set Gemini API Key”)."
+            "Use Google Gemini with your own key (run \u201cNexus: Set Gemini API Key\u201d)."
           ],
           "description": "Which AI model provider to use for summaries."
         },
@@ -103,6 +103,23 @@
           "type": "string",
           "default": "gemini-3-flash-preview",
           "description": "Gemini model name, when the provider is gemini."
+        },
+        "nexus.ai.explainLevel": {
+          "type": "string",
+          "enum": [
+            "five",
+            "middle",
+            "beginner",
+            "developer"
+          ],
+          "default": "beginner",
+          "enumDescriptions": [
+            "Explain like I'm 5: tiny sentences, no jargon, an everyday comparison.",
+            "Explain to a middle schooler: plain words, coding terms explained in brackets.",
+            "Beginner coder: correct terms, each explained the first time.",
+            "Developer: concise and technical."
+          ],
+          "description": "How simply the AI explanation is written. You can also switch it from the Nexus panel."
         }
       }
     }

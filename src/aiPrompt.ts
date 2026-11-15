@@ -24,6 +24,39 @@ export interface AiRequest {
   readonly verifiedFacts: readonly string[];
   /** Workspace-relative paths of the project's source files (names only, no contents). */
   readonly projectFiles?: readonly string[];
+  /** How simply to explain. Defaults to "beginner". */
+  readonly level?: ExplainLevel;
+}
+
+export type ExplainLevel = "five" | "middle" | "beginner" | "developer";
+
+export const EXPLAIN_LEVELS: readonly { readonly id: ExplainLevel; readonly label: string; readonly icon: string }[] = [
+  { id: "five", label: "5-year-old", icon: "🧸" },
+  { id: "middle", label: "Middle schooler", icon: "🎒" },
+  { id: "beginner", label: "Beginner coder", icon: "🌱" },
+  { id: "developer", label: "Developer", icon: "💻" },
+];
+
+/** Style instructions for each reading level. The evidence rules never change. */
+const LEVEL_STYLE: Readonly<Record<ExplainLevel, string>> = {
+  five: `READING LEVEL: explain it like you are talking to a 5-year-old.
+- Use very short sentences and everyday words. No jargon at all: say "a list of things" not "an array", "a set of steps the computer follows" not "a function".
+- Use one simple comparison from everyday life (toys, cooking, a school, a post office) to show what the code is like.
+- The summary should be 3-4 tiny sentences. Flow steps should be one short sentence each.
+- Still cite the file and line for every step, and never make anything up.`,
+  middle: `READING LEVEL: explain it to a middle-school student who is curious but has never coded.
+- Use plain words and short sentences. If you must use a coding word, explain it right away in brackets, e.g. "a variable (a labelled box that holds a value)".
+- A friendly comparison to something from everyday life is welcome when it helps.
+- Keep the summary to 4-5 sentences and each flow step to one sentence.`,
+  beginner: `READING LEVEL: explain it to someone who is learning to program.
+- Use correct technical terms, but explain each one in plain words the first time.`,
+  developer: `READING LEVEL: explain it to an experienced developer who is new to this codebase.
+- Be concise and precise; use normal technical vocabulary without defining basics.
+- Focus on responsibilities, data flow, dependencies and side effects in this project.`,
+};
+
+export function levelStyle(level: ExplainLevel | undefined): string {
+  return LEVEL_STYLE[level ?? "beginner"] ?? LEVEL_STYLE.beginner;
 }
 
 export interface AiCitation {
@@ -130,6 +163,8 @@ Facts Nexus already verified from the source (do not contradict them):
 ${facts}
 ${tree}
 ${sections.join("\n\n")}
+
+${levelStyle(request.level)}
 
 Explain what the selected code does in the context of these files.`;
 

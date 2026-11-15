@@ -1,12 +1,13 @@
 import { randomBytes } from "crypto";
 import * as vscode from "vscode";
-import type { AiResult } from "./aiPrompt";
+import { EXPLAIN_LEVELS, type AiResult, type ExplainLevel } from "./aiPrompt";
 import type { Evidence, Explanation } from "./analysis/explanationModel";
 import { renderAiResult, renderPanel } from "./panelHtml";
 
 export interface PanelCallbacks {
   readonly onEnableAi: () => void;
   readonly onToggleFollow: () => void;
+  readonly onSetLevel: (level: ExplainLevel, version: number) => void;
 }
 
 interface PanelMessage {
@@ -14,6 +15,7 @@ interface PanelMessage {
   readonly evidenceId?: string;
   readonly cite?: string;
   readonly uri?: string;
+  readonly level?: string;
 }
 
 /**
@@ -41,7 +43,7 @@ export class InvestigationPanel implements vscode.Disposable {
   }
 
   /** Shows an explanation and returns a version number used to match a later AI result. */
-  show(explanation: Explanation, displayPath: string, aiEnabled: boolean, followCursor: boolean, preserveFocus: boolean): number {
+  show(explanation: Explanation, displayPath: string, aiEnabled: boolean, followCursor: boolean, preserveFocus: boolean, explainLevel?: ExplainLevel): number {
     const panel = this.getOrCreatePanel(preserveFocus);
     this.renderVersion += 1;
     this.evidenceById = new Map(explanation.evidence.map((entry) => [entry.id, entry]));
@@ -55,6 +57,7 @@ export class InvestigationPanel implements vscode.Disposable {
       displayPath,
       aiEnabled,
       followCursor,
+      explainLevel,
     });
     if (!panel.visible) {
       panel.reveal(vscode.ViewColumn.Beside, preserveFocus);
@@ -132,6 +135,11 @@ export class InvestigationPanel implements vscode.Disposable {
           await openLocation(raw.uri, 0, 0, 0, 0);
         }
         return;
+      case "setLevel":
+        if (raw.level && EXPLAIN_LEVELS.some((entry) => entry.id === raw.level)) {
+          this.callbacks.onSetLevel(raw.level as ExplainLevel, this.renderVersion);
+        }
+        return;
       case "enableAi":
         this.callbacks.onEnableAi();
         return;
@@ -162,13 +170,14 @@ function isPanelMessage(message: unknown): message is PanelMessage {
     return false;
   }
   const candidate = message as Record<string, unknown>;
-  const allowed = ["navigate", "navigateAi", "openFile", "enableAi", "toggleFollow"];
+  const allowed = ["navigate", "navigateAi", "openFile", "setLevel", "enableAi", "toggleFollow"];
   return (
     typeof candidate.command === "string" &&
     allowed.includes(candidate.command) &&
     (candidate.evidenceId === undefined || (typeof candidate.evidenceId === "string" && candidate.evidenceId.length <= 64)) &&
     (candidate.cite === undefined || (typeof candidate.cite === "string" && candidate.cite.length <= 2048)) &&
-    (candidate.uri === undefined || (typeof candidate.uri === "string" && candidate.uri.length <= 2048))
+    (candidate.uri === undefined || (typeof candidate.uri === "string" && candidate.uri.length <= 2048)) &&
+    (candidate.level === undefined || (typeof candidate.level === "string" && candidate.level.length <= 20))
   );
 }
 
